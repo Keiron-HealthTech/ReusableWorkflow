@@ -34,10 +34,10 @@ jobs:
         id: last_commit
         run: echo "::set-output name=sha::$(git rev-parse HEAD)"
 
-      - name: Extract branch prefix
+      - name: Extract branch prefix from PR
         id: branch_prefix
         run: |
-          branch_name=$(git rev-parse --abbrev-ref HEAD)
+          branch_name=$(gh pr view ${{ inputs.development_pr_number }} --json headRefName --jq '.headRefName')
           prefix=$(echo "$branch_name" | grep -oE '^[^-]+-[^-]+')
           echo "::set-output name=prefix::$prefix"
 
