@@ -34,13 +34,15 @@ jobs:
         id: last_commit
         run: echo "::set-output name=sha::$(git rev-parse HEAD)"
 
-      - name: Get PR comments and title
+      - name: Get PR comments, title and body
         id: pr_details
         run: |
-          pr_data=$(gh pr view ${{ inputs.development_pr_number }} --json title,comments --jq '{title: .title, comments: [.comments[] | select(.body | startswith("/parent")) | .body]}')
+          pr_data=$(gh pr view ${{ inputs.development_pr_number }} --json title,body,comments --jq '{title: .title, body: .body, comments: [.comments[] | select(.body | startswith("/parent")) | .body]}')
           pr_title=$(echo "$pr_data" | jq -r '.title')
+          pr_body=$(echo "$pr_data" | jq -r '.body')
           pr_comments=$(echo "$pr_data" | jq -r '.comments | join("\n")')
           echo "::set-output name=title::$pr_title"
+          echo "::set-output name=body::$pr_body"
           echo "::set-output name=comments::$pr_comments"
 
       - name: Extract parent PR number (if any)
@@ -93,7 +95,7 @@ jobs:
         if: steps.parent_pr_number.outcome == 'failure'
         run: |
           if [ "${{ steps.cherry_pick.outcome }}" == "failure" ]; then
-            gh pr create -B main -H dev-${{ steps.last_commit.outputs.sha }} --title '🔀 [Prod] ${{ steps.pr_details.outputs.title }} - #${{ inputs.development_pr_number }} by @${{ inputs.development_pr_creator }}' --body ':warning: This PR had conflicts with main. Make sure the changes are correct before proceeding. <br> This PR includes changes from the last commit ${{ steps.last_commit.outputs.sha }}, PR \#${{ inputs.development_pr_number }} in ${{ inputs.reference_branch }}.' --assignee ${{ inputs.development_pr_creator }} --draft
+            gh pr create -B main -H dev-${{ steps.last_commit.outputs.sha }} --title '🔀 [Prod] ${{ steps.pr_details.outputs.title }} - #${{ inputs.development_pr_number }} by @${{ inputs.development_pr_creator }}' --body ':warning: This PR had conflicts with main. Make sure the changes are correct before proceeding. <br><br>**Original PR Description:**<br>${{ steps.pr_details.outputs.body }}<br><br>This PR includes changes from the last commit ${{ steps.last_commit.outputs.sha }}, PR \#${{ inputs.development_pr_number }} in ${{ inputs.reference_branch }}.' --assignee ${{ inputs.development_pr_creator }} --draft
           else
-            gh pr create -B main -H dev-${{ steps.last_commit.outputs.sha }} --title '🔀 [Prod] ${{ steps.pr_details.outputs.title }} - #${{ inputs.development_pr_number }} by @${{ inputs.development_pr_creator }}' --body 'This PR includes changes from the last commit ${{ steps.last_commit.outputs.sha }}, PR \#${{ inputs.development_pr_number }} in ${{ inputs.reference_branch }}.' --assignee ${{ inputs.development_pr_creator }} --draft
+            gh pr create -B main -H dev-${{ steps.last_commit.outputs.sha }} --title '🔀 [Prod] ${{ steps.pr_details.outputs.title }} - #${{ inputs.development_pr_number }} by @${{ inputs.development_pr_creator }}' --body '**Original PR Description:**<br>${{ steps.pr_details.outputs.body }}<br><br>This PR includes changes from the last commit ${{ steps.last_commit.outputs.sha }}, PR \#${{ inputs.development_pr_number }} in ${{ inputs.reference_branch }}.' --assignee ${{ inputs.development_pr_creator }} --draft
           fi
