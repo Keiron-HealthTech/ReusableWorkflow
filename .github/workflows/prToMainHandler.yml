@@ -39,7 +39,7 @@ jobs:
         run: |
           pr_data=$(gh pr view ${{ inputs.development_pr_number }} --json title,body,comments --jq '{title: .title, body: .body, comments: [.comments[] | select(.body | startswith("/parent")) | .body]}')
           pr_title=$(echo "$pr_data" | jq -r '.title')
-          pr_body=$(echo "$pr_data" | jq -r '.body')
+          pr_body=$(echo "$pr_data" | jq -r '.body' | sed ':a;N;$!ba;s/\n/<br>/g')
           pr_comments=$(echo "$pr_data" | jq -r '.comments | join("\n")')
           echo "::set-output name=title::$pr_title"
           echo "::set-output name=body::$pr_body"
