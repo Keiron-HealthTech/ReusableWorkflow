@@ -34,12 +34,19 @@ jobs:
         id: last_commit
         run: echo "::set-output name=sha::$(git rev-parse HEAD)"
 
+      - name: Extract branch prefix
+        id: branch_prefix
+        run: |
+          branch_name=$(git rev-parse --abbrev-ref HEAD)
+          prefix=$(echo "$branch_name" | grep -oE '^[^-]+-[^-]+')
+          echo "::set-output name=prefix::$prefix"
+
       - name: Get PR comments, title and body
         id: pr_details
         run: |
           pr_data=$(gh pr view ${{ inputs.development_pr_number }} --json title,body,comments --jq '{title: .title, body: .body, comments: [.comments[] | select(.body | startswith("/parent")) | .body]}')
           pr_title=$(echo "$pr_data" | jq -r '.title')
-          pr_body=$(echo "$pr_data" | jq -r '.body' | sed ':a;N;$!ba;s/\n/<br>/g')
+          pr_body=$(echo "$pr_data" | jq -r '.body' | sed ':a;N;$!ba;s/\r//g' | sed ':a;N;$!ba;s/\n/<br>/g' | sed 's/^<br>//;s/<br>$//')
           pr_comments=$(echo "$pr_data" | jq -r '.comments | join("\n")')
           echo "::set-output name=title::$pr_title"
           echo "::set-output name=body::$pr_body"
@@ -61,7 +68,7 @@ jobs:
         if: steps.parent_pr_number.outcome == 'failure'
         run: |
           git fetch origin main
-          git checkout -b dev-${{ steps.last_commit.outputs.sha }} origin/main
+          git checkout -b ${{ steps.branch_prefix.outputs.prefix }}-prod origin/main
 
       - name: Checkout from parent PR branch
         if: steps.parent_pr_number.outcome != 'failure'
@@ -85,7 +92,7 @@ jobs:
       - name: Push branch
         run: |
           if [ "${{ steps.parent_pr_number.outcome }}" == "failure" ]; then
-            git push origin dev-${{ steps.last_commit.outputs.sha }}
+            git push origin ${{ steps.branch_prefix.outputs.prefix }}-prod
           else
             parent_branch=$(gh pr view ${{ steps.parent_pr_number.outputs.parent_pr }} --json headRefName --jq '.headRefName')
             git push origin HEAD:$parent_branch
@@ -95,7 +102,7 @@ jobs:
         if: steps.parent_pr_number.outcome == 'failure'
         run: |
           if [ "${{ steps.cherry_pick.outcome }}" == "failure" ]; then
-            gh pr create -B main -H dev-${{ steps.last_commit.outputs.sha }} --title '🔀 [Prod] ${{ steps.pr_details.outputs.title }} - #${{ inputs.development_pr_number }} by @${{ inputs.development_pr_creator }}' --body ':warning: This PR had conflicts with main. Make sure the changes are correct before proceeding. <br><br>**Original PR Description:**<br>${{ steps.pr_details.outputs.body }}<br><br>This PR includes changes from the last commit ${{ steps.last_commit.outputs.sha }}, PR \#${{ inputs.development_pr_number }} in ${{ inputs.reference_branch }}.' --assignee ${{ inputs.development_pr_creator }} --draft
+            gh pr create -B main -H ${{ steps.branch_prefix.outputs.prefix }}-prod --title '🔀 [Prod] ${{ steps.pr_details.outputs.title }} - #${{ inputs.development_pr_number }} by @${{ inputs.development_pr_creator }}' --body ':warning: This PR had conflicts with main. Make sure the changes are correct before proceeding. <br><br>**Original PR Description:**<br>${{ steps.pr_details.outputs.body }}<br><br>This PR includes changes from the last commit ${{ steps.last_commit.outputs.sha }}, PR \#${{ inputs.development_pr_number }} in ${{ inputs.reference_branch }}.' --assignee ${{ inputs.development_pr_creator }} --draft
           else
-            gh pr create -B main -H dev-${{ steps.last_commit.outputs.sha }} --title '🔀 [Prod] ${{ steps.pr_details.outputs.title }} - #${{ inputs.development_pr_number }} by @${{ inputs.development_pr_creator }}' --body '**Original PR Description:**<br>${{ steps.pr_details.outputs.body }}<br><br>This PR includes changes from the last commit ${{ steps.last_commit.outputs.sha }}, PR \#${{ inputs.development_pr_number }} in ${{ inputs.reference_branch }}.' --assignee ${{ inputs.development_pr_creator }} --draft
+            gh pr create -B main -H ${{ steps.branch_prefix.outputs.prefix }}-prod --title '🔀 [Prod] ${{ steps.pr_details.outputs.title }} - #${{ inputs.development_pr_number }} by @${{ inputs.development_pr_creator }}' --body '**Original PR Description:**<br>${{ steps.pr_details.outputs.body }}<br><br>This PR includes changes from the last commit ${{ steps.last_commit.outputs.sha }}, PR \#${{ inputs.development_pr_number }} in ${{ inputs.reference_branch }}.' --assignee ${{ inputs.development_pr_creator }} --draft
           fi
