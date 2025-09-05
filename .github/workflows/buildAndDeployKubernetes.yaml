@@ -37,6 +37,7 @@ jobs:
       runner: ${{inputs.runner}}
       dockerfile: ${{inputs.dockerfile}}
       prefix: ${{inputs.prefix}}
+    secrets: inherit
 
   deploy:
     uses: ./.github/workflows/deployImageToKubernetes.yaml
@@ -48,3 +49,4 @@ jobs:
       environment: ${{inputs.environment}}
       image_uri: ${{ needs.build-and-publish.outputs.image_uri }}
       timeout: ${{inputs.timeout}}
+    secrets: inherit
