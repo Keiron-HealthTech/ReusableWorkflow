@@ -1,0 +1,71 @@
+name: Build image and publish to ECR
+
+on:
+  workflow_call:
+    inputs:
+      image_repository_name:
+        required: true
+        type: string
+      runner:
+        required: true
+        type: string
+      environment:
+        type: string
+        default: "dev"
+      dockerfile:
+        type: string
+        default: "Dockerfile"
+      prefix:
+        type: string
+        default: ""
+    outputs:
+      image_uri:
+        description: "The URI of the Docker image that was built and pushed to Amazon ECR"
+        value: ${{ jobs.build.outputs.image_uri }}
+
+jobs:
+  build:
+    runs-on: ${{inputs.runner}}
+    environment: ${{inputs.environment}}
+    outputs:
+      image_uri: ${{ steps.set-outputs.outputs.image_uri }}
+    steps:
+    - name: Clone
+      uses: actions/checkout@v4
+    
+    - name: set job env
+      run: |
+        echo "TAG=${GITHUB_REF_NAME////_}" >> $GITHUB_ENV
+        echo "SHORT_SHA=`echo ${GITHUB_SHA} | cut -c 1-8`" >> $GITHUB_ENV
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: us-east-1
+      
+    - name: Login to Amazon ECR
+      id: login-ecr
+      uses: aws-actions/amazon-ecr-login@v2
+
+    - name: Build, tag, and push image to Amazon ECR
+      id: build-image
+      env:
+        ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+      run: |
+        echo ">>>>> DEBUG: Starting docker image build at $(date)"
+        docker image build \
+          --tag ${{ env.ECR_REGISTRY }}/${{inputs.image_repository_name}}:latest-${TAG}-${{inputs.prefix}} \
+          --tag ${{ env.ECR_REGISTRY }}/${{inputs.image_repository_name}}:${TAG}-${{inputs.prefix}}-${SHORT_SHA} \
+          -f ${{inputs.dockerfile}} \
+          .
+        echo ">>>>> DEBUG: Finished docker image build at $(date)"
+        echo ">>>>> DEBUG: Starting docker push at $(date)"
+        docker push ${{ env.ECR_REGISTRY }}/${{inputs.image_repository_name}} --all-tags
+        echo ">>>>> DEBUG: Finished docker push at $(date)"
+    
+    - name: Set Outputs
+      id: set-outputs
+      run: echo "image_uri=${{ steps.login-ecr.outputs.registry }}/${{inputs.image_repository_name}}:${TAG}-${{inputs.prefix}}-${SHORT_SHA}" >> $GITHUB_OUTPUT
+      

@@ -1,0 +1,73 @@
+name: Publish image to Kubernetes
+
+on:
+  workflow_call:
+    inputs:
+      namespace:
+        required: true
+        type: string
+      app_name:
+        required: true
+        type: string
+      timeout:
+        type: string
+        default: "5m"
+      runner:
+        required: true
+        type: string
+      environment:
+        type: string
+        default: "dev"
+      image_uri:
+        required: true
+        type: string
+
+jobs:
+  deploy:
+    runs-on: ${{inputs.runner}}
+    environment: ${{inputs.environment}}
+    steps:
+
+    - name: Install and configure kubectl
+      run: |
+        VERSION=$(curl --silent https://storage.googleapis.com/kubernetes-release/release/stable.txt)
+        # https://github.com/aws/aws-cli/issues/6920#issuecomment-1117981158
+        VERSION=v1.23.6
+        
+        # Support for arm and x86_64 architectures
+        ARCH=$(uname -m)
+        if [ "$ARCH" = "aarch64" ]; then
+          ARCH="arm64"
+        elif [ "$ARCH" = "x86_64" ]; then
+          ARCH="amd64"
+        else
+          echo "Unsupported architecture: $ARCH"
+          exit 1
+        fi
+        
+        curl https://storage.googleapis.com/kubernetes-release/release/$VERSION/bin/linux/$ARCH/kubectl \
+          --progress-bar \
+          --location \
+          --remote-name
+        chmod +x kubectl
+        sudo mv kubectl /usr/local/bin/
+        echo ${{ secrets.KUBECONFIG }} | base64 --decode > kubeconfig.yaml
+
+    - name: Deploy
+      id: deploy
+      run: |
+        echo ${{inputs.image_uri}}
+        kubectl set image deploy/${{inputs.app_name}} ${{inputs.app_name}}=${{inputs.image_uri}} --record --namespace=${{inputs.namespace}}
+    
+    - name: Kubernetes deployment status
+      run: |
+        kubectl rollout status deployment ${{inputs.app_name}} --timeout=${{inputs.timeout}} --namespace=${{inputs.namespace}}
+    
+    - name: Rollback
+      if: steps.deploy.outcome != 'success'
+      run: |
+        kubectl rollout undo deploy ${{inputs.app_name}} --namespace=${{inputs.namespace}}
+    
+    - name: Kubernetes deployment check
+      run: |
+        kubectl get deploy ${{inputs.app_name}} --namespace=${{inputs.namespace}}

@@ -1,0 +1,52 @@
+name: Build, publish ECR and deploy to Kubernetes
+
+on:
+  workflow_call:
+    inputs:
+      namespace:
+        required: true
+        type: string
+      app_name:
+        required: true
+        type: string
+      image_repository_name:
+        required: true
+        type: string
+      timeout:
+        type: string
+        default: "5m"
+      runner:
+        required: true
+        type: string
+      environment:
+        type: string
+        default: "dev"
+      dockerfile:
+        type: string
+        default: "Dockerfile"
+      prefix:
+        type: string
+        default: ""
+
+jobs:
+  build-and-publish:
+    uses: ./.github/workflows/buildImageAndPublishECR.yaml
+    with:
+      image_repository_name: ${{inputs.image_repository_name}}
+      environment: ${{inputs.environment}}
+      runner: ${{inputs.runner}}
+      dockerfile: ${{inputs.dockerfile}}
+      prefix: ${{inputs.prefix}}
+    secrets: inherit
+
+  deploy:
+    uses: ./.github/workflows/deployImageToKubernetes.yaml
+    needs: build-and-publish
+    with:
+      namespace: ${{inputs.namespace}}
+      app_name:  ${{inputs.app_name}}
+      runner: ${{inputs.runner}}
+      environment: ${{inputs.environment}}
+      image_uri: ${{ needs.build-and-publish.outputs.image_uri }}
+      timeout: ${{inputs.timeout}}
+    secrets: inherit
