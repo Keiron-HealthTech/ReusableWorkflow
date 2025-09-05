@@ -77,8 +77,12 @@ jobs:
       - name: Commit conflicts if cherry pick fails
         if: ${{ steps.cherry_pick.outcome == 'failure' }}
         run: |
-          git add .
-          git commit --no-edit
+          if git status --porcelain | grep '^[MADRCU]'; then
+            git add .
+            git commit --no-edit
+          else
+            echo "No changes to commit after resolving conflicts"
+          fi
 
       - name: Push branch
         run: |
@@ -89,11 +93,25 @@ jobs:
             git push origin HEAD:$parent_branch
           fi
 
+      - name: Check for changes
+        id: check_changes
+        run: |
+          git fetch origin master:master
+          git rev-parse --verify HEAD
+          git rev-parse --verify master
+          CHANGES=$(git rev-list --count master..HEAD || echo "0")
+          echo "has_changes=$CHANGES" >> $GITHUB_OUTPUT
+
       - name: Create pull request
-        if: steps.parent_pr_number.outcome == 'failure'
+        if: steps.parent_pr_number.outcome == 'failure' && steps.check_changes.outputs.has_changes != '0'
         run: |
           if [ "${{ steps.cherry_pick.outcome }}" == "failure" ]; then
             gh pr create -B master -H dev-${{ steps.last_commit.outputs.sha }} --title '🔀 [Prod] ${{ steps.pr_details.outputs.title }} - #${{ inputs.development_pr_number }} by @${{ inputs.development_pr_creator }}' --body ':warning: This PR had conflicts with master. Make sure the changes are correct before proceeding. <br> This PR includes changes from the last commit ${{ steps.last_commit.outputs.sha }}, PR \#${{ inputs.development_pr_number }} in ${{ inputs.reference_branch }}.' --assignee ${{ inputs.development_pr_creator }} --draft
           else
             gh pr create -B master -H dev-${{ steps.last_commit.outputs.sha }} --title '🔀 [Prod] ${{ steps.pr_details.outputs.title }} - #${{ inputs.development_pr_number }} by @${{ inputs.development_pr_creator }}' --body 'This PR includes changes from the last commit ${{ steps.last_commit.outputs.sha }}, PR \#${{ inputs.development_pr_number }} in ${{ inputs.reference_branch }}.' --assignee ${{ inputs.development_pr_creator }} --draft
           fi
+
+      - name: Show no changes message
+        if: steps.check_changes.outputs.has_changes == '0'
+        run: |
+          echo "No hay cambios para crear un Pull Request. Los cambios ya están presentes en la rama master."
