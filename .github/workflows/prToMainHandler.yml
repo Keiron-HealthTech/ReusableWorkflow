@@ -16,6 +16,8 @@ on:
     secrets:
       personal_access_token:
         required: true
+      slack_bot_token:
+        required: false
 
 env:
   GITHUB_TOKEN: ${{ secrets.personal_access_token }}
@@ -40,6 +42,25 @@ jobs:
           branch_name=$(gh pr view ${{ inputs.development_pr_number }} --json headRefName --jq '.headRefName')
           prefix=$(echo "$branch_name" | grep -oE '^[^-]+-[^-]+')
           echo "::set-output name=prefix::$prefix"
+
+      - name: Extract team from branch prefix
+        id: team_extract
+        run: |
+          branch_name=$(gh pr view ${{ inputs.development_pr_number }} --json headRefName --jq '.headRefName')
+          echo "Branch name: $branch_name"
+
+          # Extract first segment before first hyphen
+          team=$(echo "$branch_name" | grep -oE '^[^-]+' | tr '[:lower:]' '[:upper:]')
+          echo "Extracted team: $team"
+          echo "::set-output name=team::$team"
+
+          # Set a flag if team was successfully extracted
+          if [ -n "$team" ]; then
+            echo "::set-output name=has_team::true"
+          else
+            echo "::set-output name=has_team::false"
+          fi
+        continue-on-error: true
 
       - name: Get PR comments, title and body
         id: pr_details
@@ -106,3 +127,123 @@ jobs:
           else
             gh pr create -B main -H ${{ steps.branch_prefix.outputs.prefix }}-prod --title '🔀 [Prod] ${{ steps.pr_details.outputs.title }} - #${{ inputs.development_pr_number }} by @${{ inputs.development_pr_creator }}' --body '**Original PR Description:**<br>${{ steps.pr_details.outputs.body }}<br><br>This PR includes changes from the last commit ${{ steps.last_commit.outputs.sha }}, PR \#${{ inputs.development_pr_number }} in ${{ inputs.reference_branch }}.' --assignee ${{ inputs.development_pr_creator }} --draft
           fi
+
+      - name: Determine Slack channel for team
+        id: slack_channel
+        if: failure() && steps.team_extract.outputs.has_team == 'true'
+        env:
+          SLACK_TOKEN: ${{ secrets.slack_bot_token }}
+        run: |
+          # Check if Slack token is provided
+          if [ -z "$SLACK_TOKEN" ]; then
+            echo "No Slack bot token provided, skipping notification"
+            echo "::set-output name=has_channel::false"
+            exit 0
+          fi
+
+          TEAM="${{ steps.team_extract.outputs.team }}"
+          CHANNEL=""
+
+          case "$TEAM" in
+            "CRM")
+              CHANNEL="crm-dev"
+              ;;
+            # Add more team-to-channel mappings here as needed:
+            # "SALES")
+            #   CHANNEL="sales-team"
+            #   ;;
+            *)
+              echo "No channel mapping configured for team: $TEAM"
+              ;;
+          esac
+
+          if [ -n "$CHANNEL" ]; then
+            echo "::set-output name=channel::$CHANNEL"
+            echo "::set-output name=has_channel::true"
+          else
+            echo "::set-output name=has_channel::false"
+          fi
+        continue-on-error: true
+
+      - name: Send Slack notification on failure
+        if: failure() && steps.slack_channel.outputs.has_channel == 'true'
+        uses: slackapi/slack-github-action@v2.1.1
+        with:
+          method: chat.postMessage
+          token: ${{ secrets.slack_bot_token }}
+          payload: |
+            {
+              "channel": "${{ steps.slack_channel.outputs.channel }}",
+              "text": "PR to Main Workflow Failed - Team ${{ steps.team_extract.outputs.team }}",
+              "blocks": [
+                {
+                  "type": "header",
+                  "text": {
+                    "type": "plain_text",
+                    "text": "❌ PR to Main Workflow Failed",
+                    "emoji": true
+                  }
+                },
+                {
+                  "type": "section",
+                  "fields": [
+                    {
+                      "type": "mrkdwn",
+                      "text": "*Team:*\n${{ steps.team_extract.outputs.team }}"
+                    },
+                    {
+                      "type": "mrkdwn",
+                      "text": "*PR Number:*\n<${{ github.server_url }}/${{ github.repository }}/pull/${{ inputs.development_pr_number }}|#${{ inputs.development_pr_number }}>"
+                    }
+                  ]
+                },
+                {
+                  "type": "section",
+                  "fields": [
+                    {
+                      "type": "mrkdwn",
+                      "text": "*Creator:*\n@${{ inputs.development_pr_creator }}"
+                    },
+                    {
+                      "type": "mrkdwn",
+                      "text": "*Branch:*\n${{ steps.branch_prefix.outputs.prefix }}"
+                    }
+                  ]
+                },
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "*PR Title:*\n${{ steps.pr_details.outputs.title }}"
+                  }
+                },
+                {
+                  "type": "divider"
+                },
+                {
+                  "type": "actions",
+                  "elements": [
+                    {
+                      "type": "button",
+                      "style": "danger",
+                      "text": {
+                        "type": "plain_text",
+                        "text": "View Failed Workflow Run",
+                        "emoji": true
+                      },
+                      "url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+                    },
+                    {
+                      "type": "button",
+                      "text": {
+                        "type": "plain_text",
+                        "text": "View Original PR",
+                        "emoji": true
+                      },
+                      "url": "${{ github.server_url }}/${{ github.repository }}/pull/${{ inputs.development_pr_number }}"
+                    }
+                  ]
+                }
+              ]
+            }
+        continue-on-error: true
