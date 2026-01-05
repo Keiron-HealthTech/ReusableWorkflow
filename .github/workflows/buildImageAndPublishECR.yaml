@@ -15,6 +15,9 @@ on:
       dockerfile:
         type: string
         default: "Dockerfile"
+      docker_context:
+        type: string
+        default: "."
       prefix:
         type: string
         default: ""
@@ -53,6 +56,7 @@ jobs:
       id: build-image
       env:
         ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+      working-directory: ${{inputs.docker_context}}
       run: |
         echo ">>>>> DEBUG: Starting docker image build at $(date)"
         docker image build \
