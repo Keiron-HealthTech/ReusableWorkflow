@@ -1,0 +1,76 @@
+name: Build and Deploy Docker Lambda
+
+on:
+  workflow_call:
+    inputs:
+      dockerfile:
+        description: "Path to Dockerfile (e.g., lib/staging/platform/document-interpreter/lambdas/Dockerfile)"
+        required: true
+        type: string
+      docker_context:
+        description: "Docker build context directory (e.g., lib/staging/platform/document-interpreter/lambdas)"
+        required: true
+        type: string
+      ecr_repository:
+        description: "ECR repository name (e.g., platform/document-interpreter/ai-parser)"
+        required: true
+        type: string
+      lambda_function_name:
+        description: "Lambda function name to update (e.g., platform-staging-ai-parser)"
+        required: true
+        type: string
+      aws_region:
+        description: "AWS region"
+        required: false
+        type: string
+        default: "us-east-1"
+      publish_version:
+        description: "Publish a new Lambda version after deployment"
+        required: false
+        type: boolean
+        default: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.aws_access_key_id }}
+          aws-secret-access-key: ${{ secrets.aws_secret_access_key }}
+          aws-region: ${{ inputs.aws_region }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build, tag, and push image to Amazon ECR
+        id: build-image
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          ECR_REPOSITORY: ${{ inputs.ecr_repository }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          docker build \
+            -f ${{ inputs.dockerfile }} \
+            -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG \
+            -t $ECR_REGISTRY/$ECR_REPOSITORY:latest \
+            ${{ inputs.docker_context }}
+
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
+
+          echo "image=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
+
+      - name: Deploy Lambda function
+        uses: aws-actions/aws-lambda-deploy@v1.1.0
+        with:
+          function-name: ${{ inputs.lambda_function_name }}
+          package-type: Image
+          image-uri: ${{ steps.build-image.outputs.image }}
+          publish: ${{ inputs.publish_version }}
