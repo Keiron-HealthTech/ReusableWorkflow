@@ -34,14 +34,14 @@ jobs:
 
       - name: Get the last commit SHA
         id: last_commit
-        run: echo "::set-output name=sha::$(git rev-parse HEAD)"
+        run: echo "sha=$(git rev-parse HEAD)" >> $GITHUB_OUTPUT
 
       - name: Extract branch prefix from PR
         id: branch_prefix
         run: |
           branch_name=$(gh pr view ${{ inputs.development_pr_number }} --json headRefName --jq '.headRefName')
           prefix=$(echo "$branch_name" | grep -oE '^[^-]+-[^-]+')
-          echo "::set-output name=prefix::$prefix"
+          echo "prefix=$prefix" >> $GITHUB_OUTPUT
 
       - name: Extract team from branch prefix
         id: team_extract
@@ -52,32 +52,53 @@ jobs:
           # Extract first segment before first hyphen
           team=$(echo "$branch_name" | grep -oE '^[^-]+' | tr '[:lower:]' '[:upper:]')
           echo "Extracted team: $team"
-          echo "::set-output name=team::$team"
+          echo "team=$team" >> $GITHUB_OUTPUT
 
           # Set a flag if team was successfully extracted
           if [ -n "$team" ]; then
-            echo "::set-output name=has_team::true"
+            echo "has_team=true" >> $GITHUB_OUTPUT
           else
-            echo "::set-output name=has_team::false"
+            echo "has_team=false" >> $GITHUB_OUTPUT
           fi
         continue-on-error: true
 
       - name: Get PR comments, title and body
         id: pr_details
         run: |
-          pr_data=$(gh pr view ${{ inputs.development_pr_number }} --json title,body,comments --jq '{title: .title, body: .body, comments: [.comments[] | select(.body | startswith("/parent")) | .body]}')
-          pr_title=$(echo "$pr_data" | jq -r '.title')
-          pr_body=$(echo "$pr_data" | jq -r '.body' | sed ':a;N;$!ba;s/\r//g' | sed ':a;N;$!ba;s/\n/<br>/g' | sed 's/^<br>//;s/<br>$//')
-          pr_comments=$(echo "$pr_data" | jq -r '.comments | join("\n")')
-          echo "::set-output name=title::$pr_title"
-          echo "::set-output name=body::$pr_body"
-          echo "::set-output name=comments::$pr_comments"
+          # Fetch PR data
+          pr_data=$(gh pr view ${{ inputs.development_pr_number }} --json title,body,comments)
+
+          # Extract title using heredoc delimiter for safe multiline/special char handling
+          pr_title=$(echo "$pr_data" | jq -r '.title // ""')
+          {
+            echo "title<<EOFTITLE"
+            echo "$pr_title"
+            echo "EOFTITLE"
+          } >> $GITHUB_OUTPUT
+
+          # Extract body (keep original formatting, no <br> conversion needed)
+          pr_body=$(echo "$pr_data" | jq -r '.body // ""')
+          {
+            echo "body<<EOFBODY"
+            echo "$pr_body"
+            echo "EOFBODY"
+          } >> $GITHUB_OUTPUT
+
+          # Extract parent comments
+          pr_comments=$(echo "$pr_data" | jq -r '[.comments[]? | select(.body | startswith("/parent")) | .body] | join("\n")')
+          {
+            echo "comments<<EOFCOMMENTS"
+            echo "$pr_comments"
+            echo "EOFCOMMENTS"
+          } >> $GITHUB_OUTPUT
 
       - name: Extract parent PR number (if any)
         id: parent_pr_number
+        env:
+          PR_COMMENTS: ${{ steps.pr_details.outputs.comments }}
         run: |
-          parent_pr=$(echo "${{ steps.pr_details.outputs.comments }}" | grep -oP '/parent #\K\d+')
-          echo "::set-output name=parent_pr::$parent_pr"
+          parent_pr=$(echo "$PR_COMMENTS" | grep -oP '/parent #\K\d+' || true)
+          echo "parent_pr=$parent_pr" >> $GITHUB_OUTPUT
         continue-on-error: true
 
       - name: Set Git user
@@ -121,27 +142,67 @@ jobs:
 
       - name: Create pull request
         if: steps.parent_pr_number.outcome == 'failure'
+        env:
+          PR_TITLE: ${{ steps.pr_details.outputs.title }}
+          PR_BODY: ${{ steps.pr_details.outputs.body }}
+          PR_NUMBER: ${{ inputs.development_pr_number }}
+          PR_CREATOR: ${{ inputs.development_pr_creator }}
+          BRANCH_PREFIX: ${{ steps.branch_prefix.outputs.prefix }}
+          LAST_COMMIT: ${{ steps.last_commit.outputs.sha }}
+          REF_BRANCH: ${{ inputs.reference_branch }}
+          CHERRY_PICK_FAILED: ${{ steps.cherry_pick.outcome == 'failure' }}
         run: |
-          if [ "${{ steps.cherry_pick.outcome }}" == "failure" ]; then
-            gh pr create -B main -H ${{ steps.branch_prefix.outputs.prefix }}-prod --title '🔀 [Prod] ${{ steps.pr_details.outputs.title }} - #${{ inputs.development_pr_number }} by @${{ inputs.development_pr_creator }}' --body ':warning: This PR had conflicts with main. Make sure the changes are correct before proceeding. <br><br>**Original PR Description:**<br>${{ steps.pr_details.outputs.body }}<br><br>This PR includes changes from the last commit ${{ steps.last_commit.outputs.sha }}, PR \#${{ inputs.development_pr_number }} in ${{ inputs.reference_branch }}.' --assignee ${{ inputs.development_pr_creator }} --draft
+          # Build the title (safe - passed via env var)
+          FULL_TITLE="[Prod] ${PR_TITLE} - #${PR_NUMBER} by @${PR_CREATOR}"
+
+          # Build the body and write to temp file to avoid shell escaping issues
+          if [ "$CHERRY_PICK_FAILED" == "true" ]; then
+            {
+              echo ":warning: **This PR had conflicts with main. Make sure the changes are correct before proceeding.**"
+              echo ""
+              echo "---"
+              echo ""
+              echo "**Original PR Description:**"
+              echo ""
+              echo "$PR_BODY"
+              echo ""
+              echo "---"
+              echo "This PR includes changes from commit ${LAST_COMMIT}, PR #${PR_NUMBER} in ${REF_BRANCH}."
+            } > /tmp/pr_body.md
           else
-            gh pr create -B main -H ${{ steps.branch_prefix.outputs.prefix }}-prod --title '🔀 [Prod] ${{ steps.pr_details.outputs.title }} - #${{ inputs.development_pr_number }} by @${{ inputs.development_pr_creator }}' --body '**Original PR Description:**<br>${{ steps.pr_details.outputs.body }}<br><br>This PR includes changes from the last commit ${{ steps.last_commit.outputs.sha }}, PR \#${{ inputs.development_pr_number }} in ${{ inputs.reference_branch }}.' --assignee ${{ inputs.development_pr_creator }} --draft
+            {
+              echo "**Original PR Description:**"
+              echo ""
+              echo "$PR_BODY"
+              echo ""
+              echo "---"
+              echo "This PR includes changes from commit ${LAST_COMMIT}, PR #${PR_NUMBER} in ${REF_BRANCH}."
+            } > /tmp/pr_body.md
           fi
+
+          # Create the PR using --body-file to avoid shell escaping issues
+          gh pr create \
+            -B main \
+            -H "${BRANCH_PREFIX}-prod" \
+            --title "$FULL_TITLE" \
+            --body-file /tmp/pr_body.md \
+            --assignee "$PR_CREATOR" \
+            --draft
 
       - name: Determine Slack channel for team
         id: slack_channel
         if: failure() && steps.team_extract.outputs.has_team == 'true'
         env:
           SLACK_TOKEN: ${{ secrets.slack_bot_token }}
+          TEAM: ${{ steps.team_extract.outputs.team }}
         run: |
           # Check if Slack token is provided
           if [ -z "$SLACK_TOKEN" ]; then
             echo "No Slack bot token provided, skipping notification"
-            echo "::set-output name=has_channel::false"
+            echo "has_channel=false" >> $GITHUB_OUTPUT
             exit 0
           fi
 
-          TEAM="${{ steps.team_extract.outputs.team }}"
           CHANNEL=""
 
           case "$TEAM" in
@@ -158,10 +219,10 @@ jobs:
           esac
 
           if [ -n "$CHANNEL" ]; then
-            echo "::set-output name=channel::$CHANNEL"
-            echo "::set-output name=has_channel::true"
+            echo "channel=$CHANNEL" >> $GITHUB_OUTPUT
+            echo "has_channel=true" >> $GITHUB_OUTPUT
           else
-            echo "::set-output name=has_channel::false"
+            echo "has_channel=false" >> $GITHUB_OUTPUT
           fi
         continue-on-error: true
 
