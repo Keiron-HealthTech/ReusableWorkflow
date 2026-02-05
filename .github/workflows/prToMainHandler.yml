@@ -97,7 +97,10 @@ jobs:
         env:
           PR_COMMENTS: ${{ steps.pr_details.outputs.comments }}
         run: |
-          parent_pr=$(echo "$PR_COMMENTS" | grep -oP '/parent #\K\d+' || true)
+          # grep will exit 1 if no match found, which is expected behavior
+          # continue-on-error: true allows workflow to continue
+          # outcome will be 'failure' if no /parent # comment exists
+          parent_pr=$(echo "$PR_COMMENTS" | grep -oP '/parent #\K\d+')
           echo "parent_pr=$parent_pr" >> $GITHUB_OUTPUT
         continue-on-error: true
 
