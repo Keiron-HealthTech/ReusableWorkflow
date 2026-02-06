@@ -17,7 +17,7 @@ on:
         type: string
       environment:
         type: string
-        default: "dev"
+        default: ""
       image_uri:
         required: true
         type: string
@@ -29,7 +29,7 @@ on:
 jobs:
   deploy:
     runs-on: ${{inputs.runner}}
-    environment: ${{inputs.environment}}
+    environment: ${{ inputs.environment || null }}
     steps:
 
     - name: Install kubectl (self-hosted only)

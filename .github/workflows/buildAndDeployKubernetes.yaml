@@ -20,7 +20,7 @@ on:
         type: string
       environment:
         type: string
-        default: "dev"
+        default: ""
       dockerfile:
         type: string
         default: "Dockerfile"
