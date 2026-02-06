@@ -13,6 +13,11 @@ on:
         required: false
         type: string
         default: "development"
+      target_branch:
+        required: false
+        type: string
+        default: "main"
+        description: "The target branch for the PR (e.g., main or master)"
     secrets:
       personal_access_token:
         required: true
@@ -109,11 +114,11 @@ jobs:
           git config user.name "$(git log -n 1 --pretty=format:%an)"
           git config user.email "$(git log -n 1 --pretty=format:%ae)"
 
-      - name: Checkout from main branch
+      - name: Checkout from ${{ inputs.target_branch }} branch
         if: steps.parent_pr_number.outcome == 'failure'
         run: |
-          git fetch origin main
-          git checkout -b ${{ steps.branch_prefix.outputs.prefix }}-prod origin/main
+          git fetch origin ${{ inputs.target_branch }}
+          git checkout -b ${{ steps.branch_prefix.outputs.prefix }}-prod origin/${{ inputs.target_branch }}
 
       - name: Checkout from parent PR branch
         if: steps.parent_pr_number.outcome != 'failure'
@@ -153,6 +158,7 @@ jobs:
           BRANCH_PREFIX: ${{ steps.branch_prefix.outputs.prefix }}
           LAST_COMMIT: ${{ steps.last_commit.outputs.sha }}
           REF_BRANCH: ${{ inputs.reference_branch }}
+          TARGET_BRANCH: ${{ inputs.target_branch }}
           CHERRY_PICK_FAILED: ${{ steps.cherry_pick.outcome == 'failure' }}
         run: |
           # Build the title (safe - passed via env var)
@@ -161,7 +167,7 @@ jobs:
           # Build the body and write to temp file to avoid shell escaping issues
           if [ "$CHERRY_PICK_FAILED" == "true" ]; then
             {
-              echo ":warning: **This PR had conflicts with main. Make sure the changes are correct before proceeding.**"
+              echo ":warning: **This PR had conflicts with ${TARGET_BRANCH}. Make sure the changes are correct before proceeding.**"
               echo ""
               echo "---"
               echo ""
@@ -185,7 +191,7 @@ jobs:
 
           # Create the PR using --body-file to avoid shell escaping issues
           gh pr create \
-            -B main \
+            -B "$TARGET_BRANCH" \
             -H "${BRANCH_PREFIX}-prod" \
             --title "$FULL_TITLE" \
             --body-file /tmp/pr_body.md \
