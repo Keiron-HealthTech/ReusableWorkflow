@@ -21,6 +21,10 @@ on:
       image_uri:
         required: true
         type: string
+      cluster:
+        description: "Target cluster: 'production' or 'staging'. If not set, uses legacy KUBECONFIG secret."
+        type: string
+        default: ""
 
 jobs:
   deploy:
@@ -28,12 +32,13 @@ jobs:
     environment: ${{inputs.environment}}
     steps:
 
-    - name: Install and configure kubectl
+    - name: Install kubectl (self-hosted only)
+      if: contains(inputs.runner, 'self-hosted')
       run: |
         VERSION=$(curl --silent https://storage.googleapis.com/kubernetes-release/release/stable.txt)
         # https://github.com/aws/aws-cli/issues/6920#issuecomment-1117981158
         VERSION=v1.23.6
-        
+
         # Support for arm and x86_64 architectures
         ARCH=$(uname -m)
         if [ "$ARCH" = "aarch64" ]; then
@@ -44,13 +49,31 @@ jobs:
           echo "Unsupported architecture: $ARCH"
           exit 1
         fi
-        
+
         curl https://storage.googleapis.com/kubernetes-release/release/$VERSION/bin/linux/$ARCH/kubectl \
           --progress-bar \
           --location \
           --remote-name
         chmod +x kubectl
         sudo mv kubectl /usr/local/bin/
+
+    - name: Configure AWS credentials (OIDC)
+      if: inputs.cluster != ''
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        role-to-assume: ${{ inputs.cluster == 'production' && vars.AWS_ROLE_ARN_PROD || vars.AWS_ROLE_ARN_STAGING }}
+        aws-region: us-east-1
+
+    - name: Configure kubectl (OIDC)
+      if: inputs.cluster != ''
+      run: |
+        aws eks update-kubeconfig \
+          --name ${{ inputs.cluster == 'production' && vars.EKS_CLUSTER_NAME_PROD || vars.EKS_CLUSTER_NAME_STAGING }} \
+          --region us-east-1
+
+    - name: Configure kubectl (Legacy)
+      if: inputs.cluster == ''
+      run: |
         echo ${{ secrets.KUBECONFIG }} | base64 --decode > kubeconfig.yaml
 
     - name: Deploy

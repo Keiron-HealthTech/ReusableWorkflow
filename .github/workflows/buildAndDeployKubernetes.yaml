@@ -27,6 +27,10 @@ on:
       prefix:
         type: string
         default: ""
+      cluster:
+        description: "Target cluster: 'production' or 'staging'. If not set, uses legacy credentials."
+        type: string
+        default: ""
 
 jobs:
   build-and-publish:
@@ -37,6 +41,7 @@ jobs:
       runner: ${{inputs.runner}}
       dockerfile: ${{inputs.dockerfile}}
       prefix: ${{inputs.prefix}}
+      cluster: ${{inputs.cluster}}
     secrets: inherit
 
   deploy:
@@ -49,4 +54,5 @@ jobs:
       environment: ${{inputs.environment}}
       image_uri: ${{ needs.build-and-publish.outputs.image_uri }}
       timeout: ${{inputs.timeout}}
+      cluster: ${{inputs.cluster}}
     secrets: inherit

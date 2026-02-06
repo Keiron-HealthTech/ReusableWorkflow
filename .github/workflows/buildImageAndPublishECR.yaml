@@ -18,6 +18,10 @@ on:
       prefix:
         type: string
         default: ""
+      cluster:
+        description: "Target cluster: 'production' or 'staging'. If not set, uses legacy AWS credentials."
+        type: string
+        default: ""
     outputs:
       image_uri:
         description: "The URI of the Docker image that was built and pushed to Amazon ECR"
@@ -38,7 +42,15 @@ jobs:
         echo "TAG=${GITHUB_REF_NAME////_}" >> $GITHUB_ENV
         echo "SHORT_SHA=`echo ${GITHUB_SHA} | cut -c 1-8`" >> $GITHUB_ENV
 
-    - name: Configure AWS credentials
+    - name: Configure AWS credentials (OIDC)
+      if: inputs.cluster != ''
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        role-to-assume: ${{ inputs.cluster == 'production' && vars.AWS_ROLE_ARN_PROD || vars.AWS_ROLE_ARN_STAGING }}
+        aws-region: us-east-1
+
+    - name: Configure AWS credentials (Legacy)
+      if: inputs.cluster == ''
       uses: aws-actions/configure-aws-credentials@v4
       with:
         aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
