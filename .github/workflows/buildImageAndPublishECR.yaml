@@ -46,7 +46,7 @@ jobs:
       if: inputs.cluster != ''
       uses: aws-actions/configure-aws-credentials@v4
       with:
-        role-to-assume: ${{ inputs.cluster == 'production' && vars.AWS_ROLE_ARN_PROD || vars.AWS_ROLE_ARN_STAGING }}
+        role-to-assume: ${{ inputs.cluster == 'production' && vars.APP_DEPLOY_ROLE_ARN_PROD || vars.APP_DEPLOY_ROLE_ARN_STAGING }}
         aws-region: us-east-1
 
     - name: Configure AWS credentials (Legacy)
