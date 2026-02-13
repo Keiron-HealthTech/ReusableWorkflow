@@ -34,72 +34,72 @@ jobs:
     outputs:
       image_uri: ${{ steps.set-outputs.outputs.image_uri }}
     steps:
-    - name: Clone
-      uses: actions/checkout@v4
-    
-    - name: set job env
-      run: |
-        echo "TAG=${GITHUB_REF_NAME////_}" >> $GITHUB_ENV
-        echo "SHORT_SHA=`echo ${GITHUB_SHA} | cut -c 1-8`" >> $GITHUB_ENV
+      - name: Clone
+        uses: actions/checkout@v4
 
-    - name: Set up Docker Buildx
-      id: setup-buildx
-      uses: docker/setup-buildx-action@v3
-      continue-on-error: true
+      - name: set job env
+        run: |
+          echo "TAG=${GITHUB_REF_NAME////_}" >> $GITHUB_ENV
+          echo "SHORT_SHA=`echo ${GITHUB_SHA} | cut -c 1-8`" >> $GITHUB_ENV
 
-    - name: Login to Docker Hub
-      uses: docker/login-action@v3
-      continue-on-error: true
-      with:
-        username: ${{ secrets.DOCKERHUB_USERNAME }}
-        password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - name: Set up Docker Buildx
+        id: setup-buildx
+        uses: docker/setup-buildx-action@v3
+        continue-on-error: true
 
-    - name: Configure AWS credentials (OIDC)
-      if: inputs.cluster != ''
-      uses: aws-actions/configure-aws-credentials@v4
-      with:
-        role-to-assume: ${{ inputs.cluster == 'production' && vars.APP_DEPLOY_ROLE_ARN_PROD || vars.APP_DEPLOY_ROLE_ARN_STAGING }}
-        aws-region: us-east-1
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        continue-on-error: true
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-    - name: Configure AWS credentials (Legacy)
-      if: inputs.cluster == ''
-      uses: aws-actions/configure-aws-credentials@v4
-      with:
-        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-        aws-region: us-east-1
+      - name: Configure AWS credentials (OIDC)
+        if: inputs.cluster != ''
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ inputs.cluster == 'production' && vars.APP_DEPLOY_ROLE_ARN_PRODUCTION || vars.APP_DEPLOY_ROLE_ARN_STAGING }}
+          aws-region: us-east-1
 
-    - name: Login to Amazon ECR
-      id: login-ecr
-      uses: aws-actions/amazon-ecr-login@v2
+      - name: Configure AWS credentials (Legacy)
+        if: inputs.cluster == ''
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-east-1
 
-    - name: Build, tag, and push image to Amazon ECR (BuildKit)
-      if: steps.setup-buildx.outcome == 'success'
-      id: build-image-buildkit
-      uses: docker/build-push-action@v5
-      with:
-        context: .
-        file: ${{ inputs.dockerfile }}
-        push: true
-        tags: |
-          ${{ steps.login-ecr.outputs.registry }}/${{ inputs.image_repository_name }}:latest-${{ env.TAG }}-${{ inputs.prefix }}
-          ${{ steps.login-ecr.outputs.registry }}/${{ inputs.image_repository_name }}:${{ env.TAG }}-${{ inputs.prefix }}-${{ env.SHORT_SHA }}
-        cache-from: type=gha,scope=${{ inputs.prefix || inputs.image_repository_name }}
-        cache-to: type=gha,mode=max,scope=${{ inputs.prefix || inputs.image_repository_name }}
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
 
-    - name: Build, tag, and push image to Amazon ECR (Legacy)
-      if: steps.setup-buildx.outcome != 'success'
-      id: build-image-legacy
-      env:
-        ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-      run: |
-        docker image build \
-          --tag ${{ env.ECR_REGISTRY }}/${{ inputs.image_repository_name }}:latest-${TAG}-${{ inputs.prefix }} \
-          --tag ${{ env.ECR_REGISTRY }}/${{ inputs.image_repository_name }}:${TAG}-${{ inputs.prefix }}-${SHORT_SHA} \
-          -f ${{ inputs.dockerfile }} \
-          .
-        docker push ${{ env.ECR_REGISTRY }}/${{ inputs.image_repository_name }} --all-tags
+      - name: Build, tag, and push image to Amazon ECR (BuildKit)
+        if: steps.setup-buildx.outcome == 'success'
+        id: build-image-buildkit
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ${{ inputs.dockerfile }}
+          push: true
+          tags: |
+            ${{ steps.login-ecr.outputs.registry }}/${{ inputs.image_repository_name }}:latest-${{ env.TAG }}-${{ inputs.prefix }}
+            ${{ steps.login-ecr.outputs.registry }}/${{ inputs.image_repository_name }}:${{ env.TAG }}-${{ inputs.prefix }}-${{ env.SHORT_SHA }}
+          cache-from: type=gha,scope=${{ inputs.prefix || inputs.image_repository_name }}
+          cache-to: type=gha,mode=max,scope=${{ inputs.prefix || inputs.image_repository_name }}
 
-    - name: Set Outputs
-      id: set-outputs
-      run: echo "image_uri=${{ steps.login-ecr.outputs.registry }}/${{inputs.image_repository_name}}:${TAG}-${{inputs.prefix}}-${SHORT_SHA}" >> $GITHUB_OUTPUT
+      - name: Build, tag, and push image to Amazon ECR (Legacy)
+        if: steps.setup-buildx.outcome != 'success'
+        id: build-image-legacy
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+        run: |
+          docker image build \
+            --tag ${{ env.ECR_REGISTRY }}/${{ inputs.image_repository_name }}:latest-${TAG}-${{ inputs.prefix }} \
+            --tag ${{ env.ECR_REGISTRY }}/${{ inputs.image_repository_name }}:${TAG}-${{ inputs.prefix }}-${SHORT_SHA} \
+            -f ${{ inputs.dockerfile }} \
+            .
+          docker push ${{ env.ECR_REGISTRY }}/${{ inputs.image_repository_name }} --all-tags
+
+      - name: Set Outputs
+        id: set-outputs
+        run: echo "image_uri=${{ steps.login-ecr.outputs.registry }}/${{inputs.image_repository_name}}:${TAG}-${{inputs.prefix}}-${SHORT_SHA}" >> $GITHUB_OUTPUT
