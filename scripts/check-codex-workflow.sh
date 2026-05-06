@@ -717,5 +717,44 @@ codex_section | awk '
   || fail "REQ-016 Scenario 1: Codex section must contain prose intro before first code fence"
 pass "REQ-016 Scenario 1: Codex section contains prose intro paragraph"
 
+# --- Task 3.2: REQ-016 Scenario 2 — combined caller example (both triggers) ---
+# The README must show ONE copy-paste-able caller workflow that wires up both
+# triggers (pull_request and issue_comment) so adopters get the recommended
+# dual-trigger pattern in a single place. We assert via substrings inside the
+# Codex section window so we cannot be fooled by matches elsewhere.
+
+codex_section | grep -qE 'pull_request:' \
+  || fail "REQ-016 Scenario 2: caller example must include 'pull_request:' trigger"
+pass "REQ-016 Scenario 2: caller example contains pull_request trigger"
+
+codex_section | grep -qE 'issue_comment:' \
+  || fail "REQ-016 Scenario 2: caller example must include 'issue_comment:' trigger"
+pass "REQ-016 Scenario 2: caller example contains issue_comment trigger"
+
+codex_section | grep -qF 'types: [opened, synchronize, reopened]' \
+  || fail "REQ-016 Scenario 2: pull_request must declare types [opened, synchronize, reopened]"
+pass "REQ-016 Scenario 2: pull_request types declared"
+
+codex_section | grep -qF 'types: [created]' \
+  || fail "REQ-016 Scenario 2: issue_comment must declare types [created]"
+pass "REQ-016 Scenario 2: issue_comment types declared"
+
+codex_section | grep -qF 'uses: Keiron-HealthTech/ReusableWorkflow/.github/workflows/codexPrReview.yml@' \
+  || fail "REQ-016 Scenario 2: caller example must reference Keiron-HealthTech/ReusableWorkflow/.github/workflows/codexPrReview.yml"
+pass "REQ-016 Scenario 2: caller example uses Keiron-HealthTech/ReusableWorkflow path"
+
+codex_section | grep -qF 'pr_number:' \
+  || fail "REQ-016 Scenario 2: caller example must pass pr_number input"
+pass "REQ-016 Scenario 2: caller example passes pr_number"
+
+codex_section | grep -qF 'openai_api_key: ${{ secrets.OPENAI_API_KEY }}' \
+  || fail "REQ-016 Scenario 2: caller example must wire openai_api_key secret"
+pass "REQ-016 Scenario 2: caller example wires openai_api_key secret"
+
+# At least one fenced ```yaml block inside the section.
+codex_section | grep -qE '^```ya?ml' \
+  || fail "REQ-016 Scenario 2: caller example must be inside a fenced \`\`\`yaml block"
+pass "REQ-016 Scenario 2: caller example is in a fenced yaml block"
+
 echo
 echo "ALL CODEX-WORKFLOW CHECKS PASSED (Batch 0 + Batch 1 + Batch 2 + Batch 3)"
