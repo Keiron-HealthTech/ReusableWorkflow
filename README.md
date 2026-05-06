@@ -104,7 +104,6 @@ jobs:
       pr_number: ${{ github.event.pull_request.number }}
     secrets:
       openai_api_key: ${{ secrets.OPENAI_API_KEY }}
-      personal_access_token: ${{ secrets.GITHUB_TOKEN }}
 
   review-on-comment:
     # Only run on `@codex` comments posted on PRs (not regular issues),
@@ -121,7 +120,6 @@ jobs:
       pr_number: ${{ github.event.pull_request.number || github.event.issue.number }}
     secrets:
       openai_api_key: ${{ secrets.OPENAI_API_KEY }}
-      personal_access_token: ${{ secrets.GITHUB_TOKEN }}
 ```
 
 Pin `@main` to a tag (e.g., `@v1.0.0`) once you've cut a release in this
