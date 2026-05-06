@@ -154,19 +154,17 @@ short-circuits those runs cleanly so the workflow does not fail spuriously.
 
 A maintainer can still review a fork PR on demand by commenting `@codex` on
 the PR thread. The `issue_comment` event runs in the **base** repository's
-context with full secret access, so the review proceeds normally. This
-trade-off is the fork-PR safety mitigation described in the proposal (R1):
-fully automated coverage for trusted same-repo work, gated manual coverage
-for outside contributions.
+context with full secret access, so the review proceeds normally. The
+trade-off: fully automated coverage for trusted same-repo work, gated manual
+coverage for outside contributions.
 
 #### Author-association retrigger gate
 
 Only commenters whose `github.event.comment.author_association` is one of
 `OWNER`, `MEMBER`, or `COLLABORATOR` can retrigger the review via `@codex`.
 External `CONTRIBUTOR`s — even those with merged commits in the repo — are
-deliberately blocked. This is the cost-burn / abuse mitigation described in
-the proposal (R2): without it, anyone who can comment on a public PR could
-spam `@codex` mentions and run up the OpenAI bill.
+deliberately blocked. Without this gate, anyone who can comment on a public
+PR could spam `@codex` mentions and run up the OpenAI bill.
 
 #### Customizing the prompt
 
