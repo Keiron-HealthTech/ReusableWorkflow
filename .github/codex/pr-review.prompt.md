@@ -113,3 +113,18 @@ findings over twenty weak ones.
 One paragraph on test coverage of the change: are new behaviors covered?
 Are tests deterministic and load-bearing? Note any branches that are
 unreached by tests, even if the diff itself does not change them.
+
+# Rules
+
+- Do not produce preamble such as "Here is my review", "Sure, I'll review
+  this", or any flattery — start directly with the `## Verdict` line.
+- Do not propose changes outside the scope of this PR.
+- Be specific: cite real file paths and line numbers from the diff in every
+  finding.
+- Be brief: prefer five strong findings over twenty weak ones.
+- If the diff is too large to review confidently, say so in `## Summary`,
+  emit verdict `Comment`, and ask for the PR to be split.
+- Do not invent files, lines, or APIs. If you are uncertain, say so rather
+  than guess.
+- Do not output a closing sign-off, signature, or self-rating. End on the
+  `## Coverage` paragraph.

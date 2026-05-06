@@ -620,5 +620,21 @@ for m in "${CODEX_OUTPUT_MARKERS[@]}"; do
 done
 pass "REQ-015 Scenario 3: output-format markers present (Verdict/Summary/Findings/Coverage)"
 
+# --- Task 2.4: REQ-015 Scenario 4 — Rules section forbidding preamble flattery ---
+# Require a dedicated `# Rules` (or equivalent) section AND that the section
+# contains the no-preamble instruction. The Summary section already mentions
+# 'no preamble' in passing; we want a separate, explicit rules block so the
+# instruction is unambiguous to the model.
+grep -qiE '^#{1,2}[[:space:]]+(rules|hard rules|review rules)' "$PROMPT_FILE" \
+  || fail "REQ-015 Scenario 4: $PROMPT_FILE must have a dedicated Rules heading"
+pass "REQ-015 Scenario 4: dedicated Rules heading present"
+
+# Inside-or-after-Rules: assert the no-preamble instruction body. We pull the
+# tail of the file from the Rules heading onward and grep there.
+awk '/^#{1,2}[[:space:]]+([Rr]ules|[Hh]ard [Rr]ules|[Rr]eview [Rr]ules)/{flag=1} flag' "$PROMPT_FILE" \
+  | grep -qiE 'preamble|no preamble|flattery|do not (start|open|begin)|start directly' \
+  || fail "REQ-015 Scenario 4: Rules section must forbid preamble/flattery"
+pass "REQ-015 Scenario 4: Rules section forbids preamble / flattery"
+
 echo
 echo "ALL CODEX-WORKFLOW CHECKS PASSED (Batch 0 + Batch 1 + Batch 2)"
