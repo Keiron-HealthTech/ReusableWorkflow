@@ -106,7 +106,39 @@ jobs:
           set -euo pipefail
           git fetch origin "$BASE_SHA" "$HEAD_SHA"
 
-      # 4. Sparse second-checkout of the ReusableWorkflow repo to fetch the
+      # 4. Compute review scope: list changed files with auto-generated lockfiles
+      # filtered out at the workflow level (not just via prompt instruction) so
+      # Codex never spends tokens on them. If the entire diff is lockfiles,
+      # short-circuit before invoking Codex and post a one-line comment instead.
+      #
+      # The list lives here on purpose — single point of truth, easy to extend.
+      # Matches lockfiles at any directory depth (covers monorepo workspaces).
+      - name: Compute review scope
+        id: scope
+        env:
+          BASE_SHA: ${{ steps.refs.outputs.base_sha }}
+          HEAD_SHA: ${{ steps.refs.outputs.head_sha }}
+        run: |
+          set -euo pipefail
+          files=$(git diff --name-only "$BASE_SHA".."$HEAD_SHA" \
+            | grep -Ev '(^|/)(package-lock\.json|yarn\.lock|pnpm-lock\.yaml|bun\.lockb|npm-shrinkwrap\.json|Pipfile\.lock|poetry\.lock|uv\.lock|Cargo\.lock|composer\.lock|Gemfile\.lock|mix\.lock|Podfile\.lock|pubspec\.lock|gradle\.lockfile|go\.sum)$' \
+            || true)
+          if [ -z "$files" ]; then
+            echo "lockfiles_only=true" >> "$GITHUB_OUTPUT"
+            echo "review_files=" >> "$GITHUB_OUTPUT"
+            echo "lockfiles-only diff — skipping Codex"
+          else
+            echo "lockfiles_only=false" >> "$GITHUB_OUTPUT"
+            {
+              echo "review_files<<EOF_FILES"
+              printf '%s\n' "$files"
+              echo "EOF_FILES"
+            } >> "$GITHUB_OUTPUT"
+            count=$(printf '%s\n' "$files" | wc -l | tr -d ' ')
+            echo "review scope: ${count} non-lockfile file(s)"
+          fi
+
+      # 5. Sparse second-checkout of the ReusableWorkflow repo to fetch the
       # default review prompt at the same ref the caller resolved when it
       # invoked this workflow (REQ-008, TR-1).
       #
@@ -125,8 +157,10 @@ jobs:
       # `prompt_file` is passed, because that file may not exist and the
       # fail-fast (REQ-010) is more informative when the default is also
       # available as a comparison reference. (Cheap; ~1MB, sub-second.)
+      #
+      # Skipped on lockfiles-only diffs — there's no Codex run to feed.
       - name: Sparse checkout default prompt
-        if: ${{ inputs.review_prompt == '' }}
+        if: ${{ steps.scope.outputs.lockfiles_only != 'true' && inputs.review_prompt == '' }}
         uses: actions/checkout@v4
         with:
           repository: Keiron-HealthTech/ReusableWorkflow
@@ -137,7 +171,7 @@ jobs:
             .github/codex/pr-review.prompt.md
           sparse-checkout-cone-mode: false
 
-      # 5. Resolve the effective review prompt by precedence (REQ-009):
+      # 6. Resolve the effective review prompt by precedence (REQ-009):
       #
       #   inline review_prompt   (highest)
       #   > caller-side prompt_file
@@ -155,6 +189,7 @@ jobs:
       # resolved source is missing, with `::error::` annotations naming the
       # offending path so operators can fix the caller config quickly.
       - name: Resolve effective prompt
+        if: ${{ steps.scope.outputs.lockfiles_only != 'true' }}
         id: prompt
         env:
           INPUT_REVIEW_PROMPT: ${{ inputs.review_prompt }}
@@ -195,27 +230,75 @@ jobs:
             echo "resolved prompt: ${DEFAULT_PROMPT} (baked default)"
           fi
 
-      # 6. Run Codex with the resolved prompt + caller-tunable passthroughs.
-      #
-      # Exactly one of `prompt` / `prompt-file` is non-empty per run (the
-      # resolution step in Task 1.5 enforces this). Codex treats an empty
-      # value as "not provided" so passing both is safe.
+      # 7. Compose the final prompt: prepend the filtered file list as a
+      # scope header so Codex confines its review to non-lockfile files.
+      # Both inline and file-resolution paths converge here on a single
+      # temp-file artifact, which the Codex step consumes via prompt-file.
+      - name: Compose final prompt
+        if: ${{ steps.scope.outputs.lockfiles_only != 'true' }}
+        id: compose
+        env:
+          EFFECTIVE_PROMPT_INLINE: ${{ steps.prompt.outputs.effective_prompt_inline }}
+          EFFECTIVE_PROMPT_FILE: ${{ steps.prompt.outputs.effective_prompt_file }}
+          REVIEW_FILES: ${{ steps.scope.outputs.review_files }}
+        run: |
+          set -euo pipefail
+          OUT="${RUNNER_TEMP:-/tmp}/codex-prompt.md"
+          {
+            echo "# Files to review (lockfiles pre-filtered by the workflow)"
+            echo ""
+            echo "Restrict the review to the files listed below. Auto-generated"
+            echo "lockfiles have already been excluded — do not look at or"
+            echo "comment on any file outside this list."
+            echo ""
+            printf '%s\n' "$REVIEW_FILES" | sed 's/^/- /'
+            echo ""
+            echo "---"
+            echo ""
+            if [ -n "$EFFECTIVE_PROMPT_INLINE" ]; then
+              printf '%s\n' "$EFFECTIVE_PROMPT_INLINE"
+            else
+              cat "$EFFECTIVE_PROMPT_FILE"
+            fi
+          } > "$OUT"
+          echo "final_prompt_path=$OUT" >> "$GITHUB_OUTPUT"
+
+      # 8. Run Codex with the composed prompt.
       #
       # `continue-on-error: true` (REQ-014, R4 mitigation): a Codex outage
       # or an invalid API key MUST NOT fail the caller's PR check.
       - name: Run Codex
+        if: ${{ steps.scope.outputs.lockfiles_only != 'true' }}
         id: codex
         uses: openai/codex-action@v1
         continue-on-error: true
         with:
           openai-api-key: ${{ secrets.openai_api_key }}
-          prompt: ${{ steps.prompt.outputs.effective_prompt_inline }}
-          prompt-file: ${{ steps.prompt.outputs.effective_prompt_file }}
+          prompt-file: ${{ steps.compose.outputs.final_prompt_path }}
           model: ${{ inputs.model }}
           sandbox: read-only
           safety-strategy: drop-sudo
 
-      # 7. Post the Codex final-message as a PR comment.
+      # 9a. Lockfiles-only short-circuit: no Codex output to post, just a
+      # one-liner so the PR conversation reflects that the workflow ran.
+      - name: Post lockfile-only comment
+        if: ${{ inputs.comment_on_pr && steps.scope.outputs.lockfiles_only == 'true' }}
+        uses: actions/github-script@v7
+        continue-on-error: true
+        env:
+          PR_NUMBER: ${{ inputs.pr_number }}
+        with:
+          script: |
+            const prNumber = parseInt(process.env.PR_NUMBER, 10);
+            const body = 'Auto-review skipped — this diff only changes lockfiles.\n\n> Retrigger this review by commenting `@codex` (maintainers only).';
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: prNumber,
+              body: body,
+            });
+
+      # 9b. Post the Codex final-message as a PR comment.
       #
       # Hardening: CODEX_FINAL_MESSAGE is passed via env, NEVER interpolated
       # into the JS body via ${{ }}. This neutralizes any code-injection risk
@@ -233,7 +316,7 @@ jobs:
       # `continue-on-error: true` (REQ-014): a GitHub API 5xx on
       # createComment MUST NOT fail the caller's PR check.
       - name: Post PR comment
-        if: ${{ inputs.comment_on_pr }}
+        if: ${{ inputs.comment_on_pr && steps.scope.outputs.lockfiles_only != 'true' }}
         uses: actions/github-script@v7
         continue-on-error: true
         env:
