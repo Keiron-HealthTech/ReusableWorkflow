@@ -339,5 +339,43 @@ grep -qE '\.codex-defaults/\.github/codex/pr-review\.prompt\.md' "$WORKFLOW_FILE
   || fail "REQ-008: workflow must reference '.codex-defaults/.github/codex/pr-review.prompt.md' explicitly"
 pass "REQ-008: default prompt path .codex-defaults/.github/codex/pr-review.prompt.md referenced"
 
+# --- Task 1.5: Prompt-resolution step (REQ-009, REQ-010, REQ-003) -----------
+# A step `id: prompt` MUST run BEFORE the Codex step and MUST resolve the
+# effective prompt by precedence: inline review_prompt > prompt_file >
+# default. The step has NO continue-on-error (REQ-010 fail-fast).
+if have_yq; then
+  prompt_step_count=$(
+    yq '[.jobs.review.steps[] | select(.id == "prompt")] | length' "$WORKFLOW_FILE"
+  )
+  [ "$prompt_step_count" = "1" ] \
+    || fail "REQ-009: expected exactly 1 step with 'id: prompt', found $prompt_step_count"
+
+  prompt_coe=$(
+    yq '.jobs.review.steps[] | select(.id == "prompt") | .["continue-on-error"] // "absent"' "$WORKFLOW_FILE"
+  )
+  [ "$prompt_coe" = "absent" ] \
+    || fail "REQ-010: prompt-resolution step must NOT have continue-on-error (got: $prompt_coe)"
+fi
+pass "REQ-009/REQ-010: prompt-resolution step exists, fail-fast"
+
+# --- Task 1.5: Heredoc-safe multiline output for inline prompt --------------
+grep -qE 'effective_prompt_inline<<EOF_PROMPT' "$WORKFLOW_FILE" \
+  || fail "REQ-009: prompt step must use heredoc-safe 'effective_prompt_inline<<EOF_PROMPT' for multiline output"
+pass "REQ-009: prompt step uses heredoc-safe multiline output"
+
+# --- Task 1.5: Fail-fast error annotations name the missing path (REQ-010) --
+grep -qE '::error::.*prompt_file' "$WORKFLOW_FILE" \
+  || fail "REQ-010 Scenario 1: missing '::error::' annotation naming prompt_file"
+grep -qE '::error::.*default prompt|::error::.*\.codex-defaults' "$WORKFLOW_FILE" \
+  || fail "REQ-010 Scenario 2: missing '::error::' annotation for missing default prompt"
+pass "REQ-010: fail-fast '::error::' annotations name the missing prompt path"
+
+# --- Task 1.5: Both effective outputs declared ------------------------------
+grep -qE 'effective_prompt_inline' "$WORKFLOW_FILE" \
+  || fail "REQ-009: prompt step must emit 'effective_prompt_inline' output"
+grep -qE 'effective_prompt_file' "$WORKFLOW_FILE" \
+  || fail "REQ-009: prompt step must emit 'effective_prompt_file' output"
+pass "REQ-009: prompt step emits effective_prompt_inline + effective_prompt_file outputs"
+
 echo
 echo "ALL CODEX-WORKFLOW CHECKS PASSED (Batch 0 + Batch 1 in progress)"

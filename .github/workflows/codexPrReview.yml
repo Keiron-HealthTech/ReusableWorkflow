@@ -130,20 +130,65 @@ jobs:
             .github/codex/pr-review.prompt.md
           sparse-checkout-cone-mode: false
 
-      # Tracer sub-step (Pair 4 connectivity proof — TEMPORARY, removed in
-      # REFACTOR once the prompt-resolution step in Task 1.5 lands).
-      - name: Verify default prompt fetched
-        if: ${{ inputs.review_prompt == '' }}
+      # 5. Resolve the effective review prompt by precedence (REQ-009):
+      #
+      #   inline review_prompt   (highest)
+      #   > caller-side prompt_file
+      #   > baked default at .codex-defaults/.github/codex/pr-review.prompt.md
+      #
+      # The step emits TWO outputs — exactly one will be non-empty per run:
+      #   - effective_prompt_inline : prompt body to feed via `prompt:`
+      #   - effective_prompt_file   : path to feed via `prompt-file:`
+      #
+      # The inline output uses a heredoc-safe `<<EOF_PROMPT` form so multiline
+      # prompts containing newlines, backticks, or `$` survive the trip
+      # through `$GITHUB_OUTPUT` intact (GitHub Actions documented form).
+      #
+      # NO `continue-on-error` here — REQ-010 mandates fail-fast when the
+      # resolved source is missing, with `::error::` annotations naming the
+      # offending path so operators can fix the caller config quickly.
+      - name: Resolve effective prompt
+        id: prompt
+        env:
+          INPUT_REVIEW_PROMPT: ${{ inputs.review_prompt }}
+          INPUT_PROMPT_FILE: ${{ inputs.prompt_file }}
         run: |
           set -euo pipefail
-          if [ -f .codex-defaults/.github/codex/pr-review.prompt.md ]; then
-            echo "default prompt is on disk:"
-            head -1 .codex-defaults/.github/codex/pr-review.prompt.md
+          DEFAULT_PROMPT=".codex-defaults/.github/codex/pr-review.prompt.md"
+          if [ -n "$INPUT_REVIEW_PROMPT" ]; then
+            # Inline override wins. Pass via heredoc-safe output.
+            {
+              echo "effective_prompt_inline<<EOF_PROMPT"
+              printf '%s\n' "$INPUT_REVIEW_PROMPT"
+              echo "EOF_PROMPT"
+              echo "effective_prompt_file="
+            } >> "$GITHUB_OUTPUT"
+            echo "resolved prompt: inline review_prompt input"
+          elif [ -n "$INPUT_PROMPT_FILE" ]; then
+            # Caller-supplied path inside their checkout.
+            if [ ! -f "$INPUT_PROMPT_FILE" ]; then
+              echo "::error::prompt_file '${INPUT_PROMPT_FILE}' not found in caller checkout"
+              exit 1
+            fi
+            {
+              echo "effective_prompt_inline="
+              echo "effective_prompt_file=${INPUT_PROMPT_FILE}"
+            } >> "$GITHUB_OUTPUT"
+            echo "resolved prompt: caller prompt_file=${INPUT_PROMPT_FILE}"
           else
-            echo "::warning::default prompt not found yet — Batch 2 will land it"
+            # Baked default from sparse second-checkout.
+            if [ ! -f "$DEFAULT_PROMPT" ]; then
+              echo "::error::default prompt '${DEFAULT_PROMPT}' missing — sparse checkout failed or file deleted at workflow ref"
+              exit 1
+            fi
+            {
+              echo "effective_prompt_inline="
+              echo "effective_prompt_file=${DEFAULT_PROMPT}"
+            } >> "$GITHUB_OUTPUT"
+            echo "resolved prompt: ${DEFAULT_PROMPT} (baked default)"
           fi
 
-      # 5. Run Codex with a hardcoded one-line prompt.
+      # 6. Run Codex with a hardcoded one-line prompt.
       #
       # Tracer scope (will be replaced in Task 1.6 with resolved prompt
       # outputs from the prompt-resolution step added in Task 1.5).
