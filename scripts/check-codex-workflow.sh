@@ -554,5 +554,26 @@ grep -qi 'pull request' "$PROMPT_FILE" \
   || fail "REQ-015 Scenario 1: $PROMPT_FILE must mention 'pull request'"
 pass "REQ-015 Scenario 1: $PROMPT_FILE mentions 'pull request'"
 
+# --- Task 2.2: REQ-015 Scenario 2 — eight review dimensions ---
+# Each dimension MUST appear as its own heading (## Heading) so Codex
+# treats them as discrete sections rather than a free-form paragraph.
+# Pattern: case-insensitive ATX heading containing the dimension keyword.
+# (Severity tokens checked separately in Task 2.3.)
+declare -a CODEX_REVIEW_DIMENSIONS=(
+  "correctness"
+  "security"
+  "error handling"
+  "tests"
+  "readability"
+  "performance"
+  "API|back-?compat|backward[ -]compat"
+  "config|infra"
+)
+for dim in "${CODEX_REVIEW_DIMENSIONS[@]}"; do
+  grep -qiE "^#{1,3}[[:space:]].*(${dim})" "$PROMPT_FILE" \
+    || fail "REQ-015 Scenario 2: $PROMPT_FILE must contain a heading covering '${dim}'"
+done
+pass "REQ-015 Scenario 2: all eight review dimensions present as headings"
+
 echo
 echo "ALL CODEX-WORKFLOW CHECKS PASSED (Batch 0 + Batch 1 + Batch 2)"
