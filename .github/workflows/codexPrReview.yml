@@ -99,7 +99,51 @@ jobs:
           set -euo pipefail
           git fetch origin "$BASE_SHA" "$HEAD_SHA"
 
-      # 4. Run Codex with a hardcoded one-line prompt.
+      # 4. Sparse second-checkout of the ReusableWorkflow repo to fetch the
+      # default review prompt at the same ref the caller resolved when it
+      # invoked this workflow (REQ-008, TR-1).
+      #
+      # Pinning to `github.workflow_sha` keeps the prompt and the workflow
+      # logic in lockstep — a caller that pinned `@v1.2.3` gets the prompt
+      # bundled with v1.2.3, not the latest `main`. The `|| github.sha`
+      # fallback covers the rare case where `workflow_sha` is empty (TR-1
+      # mitigation — happens when the reusable is dispatched directly).
+      #
+      # Sparse-checkout limits the fetch to a single file, ~50ms vs full
+      # repo clone. `cone-mode: false` is required because we want a single
+      # file path, not a directory cone.
+      #
+      # Skipped when the caller passes `review_prompt` (inline override) —
+      # that path doesn't need the default file. We still run when only
+      # `prompt_file` is passed, because that file may not exist and the
+      # fail-fast (REQ-010) is more informative when the default is also
+      # available as a comparison reference. (Cheap; ~1MB, sub-second.)
+      - name: Sparse checkout default prompt
+        if: ${{ inputs.review_prompt == '' }}
+        uses: actions/checkout@v4
+        with:
+          repository: Keiron-HealthTech/ReusableWorkflow
+          # fallback to github.sha when workflow_sha is empty (TR-1)
+          ref: ${{ github.workflow_sha || github.sha }}
+          path: .codex-defaults
+          sparse-checkout: |
+            .github/codex/pr-review.prompt.md
+          sparse-checkout-cone-mode: false
+
+      # Tracer sub-step (Pair 4 connectivity proof — TEMPORARY, removed in
+      # REFACTOR once the prompt-resolution step in Task 1.5 lands).
+      - name: Verify default prompt fetched
+        if: ${{ inputs.review_prompt == '' }}
+        run: |
+          set -euo pipefail
+          if [ -f .codex-defaults/.github/codex/pr-review.prompt.md ]; then
+            echo "default prompt is on disk:"
+            head -1 .codex-defaults/.github/codex/pr-review.prompt.md
+          else
+            echo "::warning::default prompt not found yet — Batch 2 will land it"
+          fi
+
+      # 5. Run Codex with a hardcoded one-line prompt.
       #
       # Tracer scope (will be replaced in Task 1.6 with resolved prompt
       # outputs from the prompt-resolution step added in Task 1.5).

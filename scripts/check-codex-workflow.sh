@@ -229,6 +229,23 @@ grep -qE 'git fetch.*origin' "$WORKFLOW_FILE" \
   || fail "REQ-007: pre-fetch step missing — expected 'git fetch origin <base> <head>'"
 pass "REQ-007: pre-fetch step runs 'git fetch origin'"
 
+# --- Task 1.3: D16 hardened — assert against the inputs map (no Azure keys) -
+# Stronger than the file-wide grep above: check the *declared* workflow_call
+# inputs do not contain any Azure-shaped key. Will fire even if a future
+# author adds e.g. `responses_api_endpoint` as a real input.
+if have_yq; then
+  bad_keys=$(
+    yq '.on.workflow_call.inputs
+         | keys
+         | map(select(test("(?i)azure|responses_api|api_version|deployment")))
+         | .[]' "$WORKFLOW_FILE" || true
+  )
+  if [ -n "$bad_keys" ]; then
+    fail "D16: Azure-shaped input keys present in workflow_call.inputs: $bad_keys"
+  fi
+fi
+pass "D16: workflow_call.inputs map has no Azure-shaped keys"
+
 # --- Task 1.2: Tightened caller checkout (REQ-006 Scenario 1) ---------------
 # The first checkout step (NOT the sparse second-checkout — that one has
 # `path:` set) MUST pin to the resolved head SHA with full history.
@@ -263,6 +280,64 @@ else
     || fail "REQ-006: caller checkout missing fetch-depth: 0"
 fi
 pass "REQ-006: caller checkout pinned to head_sha with full history"
+
+# --- Task 1.4: Sparse second-checkout of default prompt (REQ-008) -----------
+# A second actions/checkout@v4 step MUST exist that fetches
+# `Keiron-HealthTech/ReusableWorkflow` into `.codex-defaults/` with
+# sparse-checkout limited to `.github/codex/pr-review.prompt.md`. The ref MUST
+# pin to `github.workflow_sha` with `github.sha` fallback (TR-1 mitigation).
+if have_yq; then
+  sparse=$(
+    yq '[.jobs.review.steps[]
+         | select(.uses == "actions/checkout@v4")
+         | select(.with.path == ".codex-defaults")] | length' "$WORKFLOW_FILE"
+  )
+  [ "$sparse" = "1" ] \
+    || fail "REQ-008: expected exactly 1 sparse-checkout step into .codex-defaults, found $sparse"
+
+  sparse_repo=$(
+    yq '.jobs.review.steps[]
+         | select(.uses == "actions/checkout@v4")
+         | select(.with.path == ".codex-defaults")
+         | .with.repository' "$WORKFLOW_FILE"
+  )
+  [ "$sparse_repo" = "Keiron-HealthTech/ReusableWorkflow" ] \
+    || fail "REQ-008: sparse-checkout repository must be Keiron-HealthTech/ReusableWorkflow (got: $sparse_repo)"
+
+  sparse_cone=$(
+    yq '.jobs.review.steps[]
+         | select(.uses == "actions/checkout@v4")
+         | select(.with.path == ".codex-defaults")
+         | .with["sparse-checkout-cone-mode"]' "$WORKFLOW_FILE"
+  )
+  [ "$sparse_cone" = "false" ] \
+    || fail "REQ-008: sparse-checkout-cone-mode must be false (got: $sparse_cone)"
+
+  sparse_paths=$(
+    yq '.jobs.review.steps[]
+         | select(.uses == "actions/checkout@v4")
+         | select(.with.path == ".codex-defaults")
+         | .with["sparse-checkout"]' "$WORKFLOW_FILE"
+  )
+  echo "$sparse_paths" | grep -qE '\.github/codex/pr-review\.prompt\.md' \
+    || fail "REQ-008: sparse-checkout paths must include '.github/codex/pr-review.prompt.md'"
+fi
+pass "REQ-008: sparse-checkout step fetches default prompt into .codex-defaults/"
+
+# --- Task 1.4: TR-1 fallback (workflow_sha || github.sha) -------------------
+# When the reusable workflow is dispatched directly (rare but possible),
+# `github.workflow_sha` may be empty. Fall back to `github.sha`.
+grep -qE 'github\.workflow_sha[[:space:]]*\|\|[[:space:]]*github\.sha' "$WORKFLOW_FILE" \
+  || fail "REQ-008/TR-1: sparse-checkout ref must use 'github.workflow_sha || github.sha' fallback"
+pass "REQ-008/TR-1: sparse-checkout ref has workflow_sha || github.sha fallback"
+
+# --- Task 1.4: Existence assertion before Codex (R6 mitigation) -------------
+# After sparse-checkout but BEFORE Codex runs, the workflow MUST verify
+# that .codex-defaults/.github/codex/pr-review.prompt.md exists when the
+# default branch of prompt resolution will be taken. (Plan §6 R6.)
+grep -qE '\.codex-defaults/\.github/codex/pr-review\.prompt\.md' "$WORKFLOW_FILE" \
+  || fail "REQ-008: workflow must reference '.codex-defaults/.github/codex/pr-review.prompt.md' explicitly"
+pass "REQ-008: default prompt path .codex-defaults/.github/codex/pr-review.prompt.md referenced"
 
 echo
 echo "ALL CODEX-WORKFLOW CHECKS PASSED (Batch 0 + Batch 1 in progress)"
