@@ -822,5 +822,15 @@ codex_section | grep -qE 'CONTRIBUTOR' \
   || fail "REQ-018: author-association prose must explicitly call out that CONTRIBUTOR is excluded"
 pass "REQ-018: author-association prose calls out CONTRIBUTOR exclusion"
 
+# --- Task 3.5: REQ-019 — pr_number convergence expression in example ---
+# Both pull_request and issue_comment events must reach the reusable
+# workflow with the same input shape; the example uses the `||` fallback
+# so the same `with: pr_number:` line works for both event types when the
+# issue_comment job fires (where `github.event.pull_request` is null).
+
+codex_section | grep -qF '${{ github.event.pull_request.number || github.event.issue.number }}' \
+  || fail "REQ-019: caller example must converge pr_number with the '|| github.event.issue.number' fallback"
+pass "REQ-019: pr_number convergence expression present"
+
 echo
 echo "ALL CODEX-WORKFLOW CHECKS PASSED (Batch 0 + Batch 1 + Batch 2 + Batch 3)"
