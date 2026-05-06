@@ -57,3 +57,17 @@ jobs:
       aws_account_id: ${{ secrets.AWS_ACCOUNT_ID }}
       personal_token: ${{ secrets.PERSONAL_TOKEN }}
 ```
+
+## Codex PR Review
+
+Reusable workflow that runs an automated [OpenAI Codex](https://openai.com/index/introducing-codex/)
+review on a pull request and posts the verdict as a single PR comment. It is
+designed for dual-trigger adoption: the same workflow runs automatically when
+a PR is opened or updated, and can be re-triggered on demand by maintainers
+commenting `@codex` on the PR thread. The review uses a default
+"good standards" prompt (correctness, security, error handling, tests,
+readability, performance, API compatibility, configuration), which any caller
+can override inline or via a file checked into the caller repo.
+
+OpenAI Codex is the only supported backend. Azure-OpenAI passthrough is
+intentionally out of scope.

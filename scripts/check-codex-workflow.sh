@@ -660,5 +660,62 @@ if grep -nE ' +$' "$PROMPT_FILE" >/dev/null 2>&1; then
 fi
 pass "tidy: $PROMPT_FILE has no trailing whitespace"
 
+# =============================================================================
+# BATCH 3 — README "Codex PR Review" section
+# =============================================================================
+# Tasks 3.1..3.6 document the caller-side adoption pattern in `README.md`.
+# Each task appends one or more grep / awk assertions verifying the README
+# contains the required heading, code block, or prose substring. The README
+# section is bracketed by `## Codex PR Review` and the next `## ` heading
+# (or EOF). For substring assertions we extract that window via awk and
+# grep inside it, so we can't be fooled by matches elsewhere in the README.
+
+README_FILE="README.md"
+
+# Helper: print just the lines BETWEEN `## Codex PR Review` (inclusive) and
+# the next top-level `## ` heading (exclusive). If no Codex section exists
+# this prints nothing, which makes downstream greps fail loud.
+codex_section() {
+  awk '
+    /^## Codex PR Review/ { in_section = 1; print; next }
+    /^## / && in_section  { exit }
+    in_section            { print }
+  ' "$README_FILE"
+}
+
+# --- Task 3.1: REQ-016 Scenario 1 — section heading + intro paragraph ---
+test -s "$README_FILE" \
+  || fail "REQ-016 Scenario 1: $README_FILE must exist and be non-empty"
+pass "REQ-016 Scenario 1: $README_FILE exists and is non-empty"
+
+grep -qE '^## Codex PR Review' "$README_FILE" \
+  || fail "REQ-016 Scenario 1: $README_FILE must contain a '## Codex PR Review' heading"
+pass "REQ-016 Scenario 1: '## Codex PR Review' heading present"
+
+# Position check — Codex section must come AFTER the existing two examples
+# (buildKanikoAndChangeImage / buildImageAndPublishECR) so it doesn't disrupt
+# the existing flow. We assert the heading line number > the line that
+# references one of the prior reusable workflows.
+codex_line=$(grep -nE '^## Codex PR Review' "$README_FILE" | head -1 | cut -d: -f1)
+prior_line=$(grep -nE 'buildImageAndPublishECR\.yml' "$README_FILE" | head -1 | cut -d: -f1)
+if [ -z "$codex_line" ] || [ -z "$prior_line" ]; then
+  fail "REQ-016 Scenario 1: could not locate Codex heading or prior example for ordering check"
+fi
+if [ "$codex_line" -le "$prior_line" ]; then
+  fail "REQ-016 Scenario 1: Codex heading (line $codex_line) must come after prior examples (line $prior_line)"
+fi
+pass "REQ-016 Scenario 1: Codex heading is positioned after existing examples"
+
+# Intro prose: section must contain at least one non-heading paragraph
+# before the first code fence (the YAML example lands later).
+codex_section | awk '
+  /^## / { next }
+  /^```/ { exit }
+  /[A-Za-z]/ { found = 1 }
+  END { exit (found ? 0 : 1) }
+' \
+  || fail "REQ-016 Scenario 1: Codex section must contain prose intro before first code fence"
+pass "REQ-016 Scenario 1: Codex section contains prose intro paragraph"
+
 echo
-echo "ALL CODEX-WORKFLOW CHECKS PASSED (Batch 0 + Batch 1 + Batch 2)"
+echo "ALL CODEX-WORKFLOW CHECKS PASSED (Batch 0 + Batch 1 + Batch 2 + Batch 3)"
