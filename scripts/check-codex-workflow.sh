@@ -756,5 +756,32 @@ codex_section | grep -qE '^```ya?ml' \
   || fail "REQ-016 Scenario 2: caller example must be inside a fenced \`\`\`yaml block"
 pass "REQ-016 Scenario 2: caller example is in a fenced yaml block"
 
+# --- Task 3.3: REQ-017 — fork-PR guard documentation ---
+# The caller example AND surrounding prose must explain why fork PRs are
+# excluded from the auto-review path and how `@codex` covers them instead.
+
+codex_section | grep -qF 'github.event.pull_request.head.repo.full_name == github.repository' \
+  || fail "REQ-017: Codex section must contain the same-repo guard expression head.repo.full_name == github.repository"
+pass "REQ-017: same-repo fork-PR guard expression present"
+
+codex_section | grep -qiE 'fork' \
+  || fail "REQ-017: Codex section must explain fork-PR behavior in prose"
+pass "REQ-017: Codex section explains fork-PR behavior"
+
+# Require a dedicated subsection covering fork-PR behavior so the trade-off
+# is unambiguous to adopters (not just buried in a code-comment).
+codex_section | grep -qiE '^#{2,4}[[:space:]]+.*[Ff]ork' \
+  || fail "REQ-017: Codex section must contain a dedicated fork-PR subheading"
+pass "REQ-017: dedicated fork-PR subheading present"
+
+# Cross-reference the @codex retrigger as the fork escape hatch. We pull
+# the slice of the section starting at the fork heading and stopping at
+# the next subsection heading, then assert @codex appears within it.
+codex_section \
+  | awk '/^#{2,4}[[:space:]]+.*[Ff]ork/{flag=1; next} /^#{2,4}[[:space:]]/{flag=0} flag' \
+  | grep -qF '@codex' \
+  || fail "REQ-017: fork-PR subsection must mention @codex retrigger as the escape hatch"
+pass "REQ-017: fork-PR subsection cross-references @codex retrigger"
+
 echo
 echo "ALL CODEX-WORKFLOW CHECKS PASSED (Batch 0 + Batch 1 + Batch 2 + Batch 3)"
