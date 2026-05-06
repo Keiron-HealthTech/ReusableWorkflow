@@ -636,5 +636,29 @@ awk '/^#{1,2}[[:space:]]+([Rr]ules|[Hh]ard [Rr]ules|[Rr]eview [Rr]ules)/{flag=1}
   || fail "REQ-015 Scenario 4: Rules section must forbid preamble/flattery"
 pass "REQ-015 Scenario 4: Rules section forbids preamble / flattery"
 
+# --- Task 2.5: tidy — no literal tabs, line count in target range ---
+# (Supports REQ-015 overall via formatting hygiene: tab characters mix
+# unpredictably with markdown indentation and break code-fence rendering.)
+if grep -P '\t' "$PROMPT_FILE" >/dev/null 2>&1; then
+  fail "tidy: $PROMPT_FILE must not contain literal tab characters"
+fi
+pass "tidy: $PROMPT_FILE contains no literal tabs"
+
+# Length sanity check: the prompt should be substantial but not a novel.
+prompt_lines=$(wc -l < "$PROMPT_FILE" | tr -d ' ')
+if [ "$prompt_lines" -lt 60 ]; then
+  fail "tidy: $PROMPT_FILE is too short ($prompt_lines lines, expected >= 60)"
+fi
+if [ "$prompt_lines" -gt 200 ]; then
+  fail "tidy: $PROMPT_FILE is too long ($prompt_lines lines, expected <= 200)"
+fi
+pass "tidy: $PROMPT_FILE length $prompt_lines lines is within 60-200 range"
+
+# No trailing whitespace (subtle markdown issue: trailing spaces force a <br>).
+if grep -nE ' +$' "$PROMPT_FILE" >/dev/null 2>&1; then
+  fail "tidy: $PROMPT_FILE must not contain trailing whitespace"
+fi
+pass "tidy: $PROMPT_FILE has no trailing whitespace"
+
 echo
 echo "ALL CODEX-WORKFLOW CHECKS PASSED (Batch 0 + Batch 1 + Batch 2)"
