@@ -1,0 +1,115 @@
+name: Codex PR Review
+
+# Tracer-bullet reusable workflow.
+#
+# Status: BATCH 0 (tracer) — minimal end-to-end wiring only.
+# Spec: see flow/codex-action-integration/spec (engram #193) — REQ-001, REQ-002,
+# REQ-004, REQ-005, REQ-011 (Scenario 1 only — pinning), REQ-012 (one comment per
+# run), REQ-014 (continue-on-error on Codex + comment).
+#
+# Deliberately NOT YET PRESENT (these land in Batch 1+):
+#   - head_sha / base_sha override inputs and gh-pr-view fallback step
+#   - sparse second-checkout of .codex-defaults/
+#   - prompt resolution step (override precedence)
+#   - retrigger footer + body truncation
+#   - optional Slack failure notification
+#   - prompt_file / review_prompt override surface
+#
+# Caller wiring example: see README.md "Codex PR Review" section
+# (also added in a later batch).
+
+on:
+  workflow_call:
+    inputs:
+      pr_number:
+        description: "Pull request number to review."
+        required: true
+        type: number
+    secrets:
+      openai_api_key:
+        description: "OpenAI API key used by openai/codex-action@v1."
+        required: true
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    steps:
+      # 1. Resolve the PR head SHA via `gh pr view`.
+      #
+      # `pull_request` and `issue_comment` events expose the head SHA
+      # in different shapes (and `issue_comment` doesn't expose one at
+      # all without an extra API call), so we always resolve it the
+      # same way regardless of the caller's trigger. This step has no
+      # `continue-on-error:` — if it fails, the run must fail (REQ-006
+      # Scenario 3 fail-fast guarantee, asserted in Batch 1).
+      - name: Resolve PR head SHA
+        id: refs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ inputs.pr_number }}
+        run: |
+          set -euo pipefail
+          head_sha=$(gh pr view "$PR_NUMBER" \
+            --repo "${{ github.repository }}" \
+            --json headRefOid \
+            --jq '.headRefOid')
+          if [ -z "$head_sha" ] || [ "$head_sha" = "null" ]; then
+            echo "::error::could not resolve head SHA for PR #${PR_NUMBER}"
+            exit 1
+          fi
+          echo "head_sha=${head_sha}" >> "$GITHUB_OUTPUT"
+
+      # 2. Check out the caller repo at the resolved head SHA.
+      - name: Checkout caller at PR head
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.refs.outputs.head_sha }}
+          fetch-depth: 0
+
+      # 3. Run Codex with a hardcoded one-line prompt.
+      #
+      # Tracer scope: prompt is intentionally inline + literal so that
+      # this batch proves only the wiring (caller -> reusable -> Codex
+      # -> comment). Real prompt resolution (review_prompt / prompt_file
+      # / sparse-checked-out default) lands in Batch 1.
+      - name: Run Codex
+        id: codex
+        uses: openai/codex-action@v1
+        continue-on-error: true
+        with:
+          openai-api-key: ${{ secrets.openai_api_key }}
+          prompt: "Review this PR for obvious issues."
+          sandbox: read-only
+          safety-strategy: drop-sudo
+
+      # 4. Post the Codex final-message as a PR comment.
+      #
+      # Final-message is passed via env (NOT direct ${{ }} interpolation
+      # into the script body) to neutralize any code-injection risk if
+      # Codex output ever contains JS string-terminating characters —
+      # this is the GitHub-recommended hardening for actions/github-script.
+      # No retrigger footer, no truncation: those land in Batch 1.7 / 1.8.
+      - name: Post PR comment
+        uses: actions/github-script@v7
+        continue-on-error: true
+        env:
+          CODEX_FINAL_MESSAGE: ${{ steps.codex.outputs.final-message }}
+          PR_NUMBER: ${{ inputs.pr_number }}
+        with:
+          script: |
+            const codexOutput = process.env.CODEX_FINAL_MESSAGE || '';
+            const prNumber = parseInt(process.env.PR_NUMBER, 10);
+            const body = codexOutput.trim().length > 0
+              ? codexOutput
+              : '_Codex returned no output for this run._';
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: prNumber,
+              body: body,
+            });
