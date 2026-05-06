@@ -532,5 +532,27 @@ exact_coe=$(grep -cE '^\s*continue-on-error:\s*true\s*$' "$WORKFLOW_FILE" || tru
   || fail "fail-fast: expected exactly 2 'continue-on-error: true' lines (Codex + comment), found $exact_coe"
 pass "fail-fast: exactly 2 continue-on-error: true lines (Codex + comment)"
 
+# ============================================================================
+# BATCH 2 — Default prompt file: .github/codex/pr-review.prompt.md
+# REQ-015 Scenarios 1-4. These checks assert STRUCTURE, not exact wording —
+# the default prompt may be polished in REFACTOR steps without breaking them.
+# ============================================================================
+PROMPT_FILE=".github/codex/pr-review.prompt.md"
+
+# --- Task 2.1: REQ-015 Scenario 1 — file exists, non-empty, role declaration ---
+[ -s "$PROMPT_FILE" ] \
+  || fail "REQ-015 Scenario 1: $PROMPT_FILE must exist and be non-empty"
+pass "REQ-015 Scenario 1: $PROMPT_FILE exists and is non-empty"
+
+# Role declaration must appear in the first ~10 lines of the file (a model
+# prompt should establish role up front, not bury it in the middle).
+head -n 10 "$PROMPT_FILE" | grep -qiE 'you (are|will)|reviewing|reviewer' \
+  || fail "REQ-015 Scenario 1: $PROMPT_FILE must contain a role declaration in the first 10 lines"
+pass "REQ-015 Scenario 1: role declaration present in first 10 lines"
+
+grep -qi 'pull request' "$PROMPT_FILE" \
+  || fail "REQ-015 Scenario 1: $PROMPT_FILE must mention 'pull request'"
+pass "REQ-015 Scenario 1: $PROMPT_FILE mentions 'pull request'"
+
 echo
-echo "ALL CODEX-WORKFLOW CHECKS PASSED (Batch 0 + Batch 1)"
+echo "ALL CODEX-WORKFLOW CHECKS PASSED (Batch 0 + Batch 1 + Batch 2)"
