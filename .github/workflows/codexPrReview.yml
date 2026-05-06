@@ -3,15 +3,6 @@ name: Codex PR Review
 # Reusable workflow that runs `openai/codex-action@v1` against a caller's PR
 # and posts the model's review as a single PR comment.
 #
-# Spec: flow/codex-action-integration/spec (engram #193) — REQ-001..REQ-020.
-# Design: flow/codex-action-integration/design (engram #194, #195).
-# Plan: flow/codex-action-integration/plan (engram #196), Batch 1.
-#
-# Status: BATCH 1 in progress — full input/secret signature, ref resolution,
-# sparse-checkout of default prompt, prompt-resolution precedence, comment
-# footer + truncation. Default prompt FILE landed in Batch 2; README in Batch 3;
-# optional Slack failure ping in Batch 4.
-#
 # Caller wiring example: see README.md "Codex PR Review" section.
 
 on:
@@ -22,8 +13,7 @@ on:
         description: "Pull request number to review."
         required: true
         type: number
-      # Optional inline prompt override. Wins over `prompt_file` and the baked
-      # default per REQ-009 precedence.
+      # Optional inline prompt override. Wins over `prompt_file` and the baked default.
       review_prompt:
         description: "Inline review prompt body. Wins over prompt_file + default."
         required: false
@@ -65,8 +55,8 @@ jobs:
       # 1. Resolve PR head + base SHAs via `gh pr view`.
       #
       # Caller passes only `pr_number`; the workflow resolves both refs from
-      # the GitHub API. NO `continue-on-error` here — REQ-006 Scenario 3 +
-      # REQ-010 mandate fail-fast on any resolution error.
+      # the GitHub API. NO `continue-on-error` here — fail fast on any
+      # resolution error so misconfigured callers see the problem immediately.
       - name: Resolve PR refs
         id: refs
         env:
@@ -97,7 +87,7 @@ jobs:
           ref: ${{ steps.refs.outputs.head_sha }}
           fetch-depth: 0
 
-      # 3. Pre-fetch base + head refs so Codex can diff them locally (REQ-007).
+      # 3. Pre-fetch base + head refs so Codex can diff them locally.
       - name: Pre-fetch PR refs
         env:
           BASE_SHA: ${{ steps.refs.outputs.base_sha }}
@@ -121,7 +111,7 @@ jobs:
         run: |
           set -euo pipefail
           files=$(git diff --name-only "$BASE_SHA".."$HEAD_SHA" \
-            | grep -Ev '(^|/)(package-lock\.json|yarn\.lock|pnpm-lock\.yaml|bun\.lockb|npm-shrinkwrap\.json|Pipfile\.lock|poetry\.lock|uv\.lock|Cargo\.lock|composer\.lock|Gemfile\.lock|mix\.lock|Podfile\.lock|pubspec\.lock|gradle\.lockfile|go\.sum)$' \
+            | grep -Ev '(^|/)(package-lock\.json|yarn\.lock|pnpm-lock\.yaml|bun\.lockb|npm-shrinkwrap\.json|Pipfile\.lock|poetry\.lock|uv\.lock|Cargo\.lock|composer\.lock|Gemfile\.lock|mix\.lock|Podfile\.lock|pubspec\.lock|gradle\.lockfile|go\.sum|go\.work\.sum|Gopkg\.lock|glide\.lock)$' \
             || true)
           if [ -z "$files" ]; then
             echo "lockfiles_only=true" >> "$GITHUB_OUTPUT"
@@ -140,54 +130,49 @@ jobs:
 
       # 5. Sparse second-checkout of the ReusableWorkflow repo to fetch the
       # default review prompt at the same ref the caller resolved when it
-      # invoked this workflow (REQ-008, TR-1).
+      # invoked this workflow.
       #
       # Pinning to `github.workflow_sha` keeps the prompt and the workflow
       # logic in lockstep — a caller that pinned `@v1.2.3` gets the prompt
       # bundled with v1.2.3, not the latest `main`. The `|| github.sha`
-      # fallback covers the rare case where `workflow_sha` is empty (TR-1
-      # mitigation — happens when the reusable is dispatched directly).
+      # fallback covers the rare case where `workflow_sha` is empty (when the
+      # reusable is dispatched directly).
       #
       # Sparse-checkout limits the fetch to a single file, ~50ms vs full
       # repo clone. `cone-mode: false` is required because we want a single
       # file path, not a directory cone.
       #
       # Skipped when the caller passes `review_prompt` (inline override) —
-      # that path doesn't need the default file. We still run when only
-      # `prompt_file` is passed, because that file may not exist and the
-      # fail-fast (REQ-010) is more informative when the default is also
-      # available as a comparison reference. (Cheap; ~1MB, sub-second.)
-      #
-      # Skipped on lockfiles-only diffs — there's no Codex run to feed.
+      # that path doesn't need the default file. Also skipped on lockfiles-
+      # only diffs since there's no Codex run to feed.
       - name: Sparse checkout default prompt
         if: ${{ steps.scope.outputs.lockfiles_only != 'true' && inputs.review_prompt == '' }}
         uses: actions/checkout@v4
         with:
           repository: Keiron-HealthTech/ReusableWorkflow
-          # fallback to github.sha when workflow_sha is empty (TR-1)
           ref: ${{ github.workflow_sha || github.sha }}
           path: .codex-defaults
           sparse-checkout: |
             .github/codex/pr-review.prompt.md
           sparse-checkout-cone-mode: false
 
-      # 6. Resolve the effective review prompt by precedence (REQ-009):
+      # 6. Resolve the effective review prompt by precedence:
       #
       #   inline review_prompt   (highest)
       #   > caller-side prompt_file
       #   > baked default at .codex-defaults/.github/codex/pr-review.prompt.md
       #
       # The step emits TWO outputs — exactly one will be non-empty per run:
-      #   - effective_prompt_inline : prompt body to feed via `prompt:`
-      #   - effective_prompt_file   : path to feed via `prompt-file:`
+      #   - effective_prompt_inline : prompt body
+      #   - effective_prompt_file   : path to prompt file
       #
       # The inline output uses a heredoc-safe `<<EOF_PROMPT` form so multiline
       # prompts containing newlines, backticks, or `$` survive the trip
-      # through `$GITHUB_OUTPUT` intact (GitHub Actions documented form).
+      # through `$GITHUB_OUTPUT` intact.
       #
-      # NO `continue-on-error` here — REQ-010 mandates fail-fast when the
-      # resolved source is missing, with `::error::` annotations naming the
-      # offending path so operators can fix the caller config quickly.
+      # NO `continue-on-error` here — fail fast when the resolved source is
+      # missing, with `::error::` annotations naming the offending path so
+      # operators can fix the caller config quickly.
       - name: Resolve effective prompt
         if: ${{ steps.scope.outputs.lockfiles_only != 'true' }}
         id: prompt
@@ -198,7 +183,6 @@ jobs:
           set -euo pipefail
           DEFAULT_PROMPT=".codex-defaults/.github/codex/pr-review.prompt.md"
           if [ -n "$INPUT_REVIEW_PROMPT" ]; then
-            # Inline override wins. Pass via heredoc-safe output.
             {
               echo "effective_prompt_inline<<EOF_PROMPT"
               printf '%s\n' "$INPUT_REVIEW_PROMPT"
@@ -207,7 +191,6 @@ jobs:
             } >> "$GITHUB_OUTPUT"
             echo "resolved prompt: inline review_prompt input"
           elif [ -n "$INPUT_PROMPT_FILE" ]; then
-            # Caller-supplied path inside their checkout.
             if [ ! -f "$INPUT_PROMPT_FILE" ]; then
               echo "::error::prompt_file '${INPUT_PROMPT_FILE}' not found in caller checkout"
               exit 1
@@ -218,7 +201,6 @@ jobs:
             } >> "$GITHUB_OUTPUT"
             echo "resolved prompt: caller prompt_file=${INPUT_PROMPT_FILE}"
           else
-            # Baked default from sparse second-checkout.
             if [ ! -f "$DEFAULT_PROMPT" ]; then
               echo "::error::default prompt '${DEFAULT_PROMPT}' missing — sparse checkout failed or file deleted at workflow ref"
               exit 1
@@ -265,8 +247,8 @@ jobs:
 
       # 8. Run Codex with the composed prompt.
       #
-      # `continue-on-error: true` (REQ-014, R4 mitigation): a Codex outage
-      # or an invalid API key MUST NOT fail the caller's PR check.
+      # `continue-on-error: true`: a Codex outage or an invalid API key MUST
+      # NOT fail the caller's PR check.
       - name: Run Codex
         if: ${{ steps.scope.outputs.lockfiles_only != 'true' }}
         id: codex
@@ -279,7 +261,7 @@ jobs:
           sandbox: read-only
           safety-strategy: drop-sudo
 
-      # 9a. Lockfiles-only short-circuit: no Codex output to post, just a
+      # 9. Lockfiles-only short-circuit: no Codex output to post, just a
       # one-liner so the PR conversation reflects that the workflow ran.
       - name: Post lockfile-only comment
         if: ${{ inputs.comment_on_pr && steps.scope.outputs.lockfiles_only == 'true' }}
@@ -298,23 +280,21 @@ jobs:
               body: body,
             });
 
-      # 9b. Post the Codex final-message as a PR comment.
+      # 10. Post the Codex final-message as a PR comment.
       #
       # Hardening: CODEX_FINAL_MESSAGE is passed via env, NEVER interpolated
-      # into the JS body via ${{ }}. This neutralizes any code-injection risk
-      # if model output ever contains JS string-terminating characters.
+      # into the JS body via `${{ }}`. This neutralizes any code-injection
+      # risk if model output ever contains JS string-terminating characters.
       #
       # Footer: every comment ends with a Markdown blockquote line telling
-      # the reader how to re-trigger the review (REQ-013, D17). Wording is
-      # locked structurally: line begins '> ', contains 'Retrigger' and
-      # '@codex'. The footer is appended LAST so it survives truncation
-      # (Task 1.8) — see the body-build block below.
+      # the reader how to re-trigger the review. Appended LAST so it
+      # survives the truncation step.
       #
       # Gate: skipped entirely when caller passes `comment_on_pr: false`
-      # (REQ-012 Scenario 2 — useful for dry-runs / smoke tests).
+      # (useful for dry-runs / smoke tests).
       #
-      # `continue-on-error: true` (REQ-014): a GitHub API 5xx on
-      # createComment MUST NOT fail the caller's PR check.
+      # `continue-on-error: true`: a GitHub API 5xx on createComment MUST
+      # NOT fail the caller's PR check.
       - name: Post PR comment
         if: ${{ inputs.comment_on_pr && steps.scope.outputs.lockfiles_only != 'true' }}
         uses: actions/github-script@v7
@@ -326,7 +306,7 @@ jobs:
           script: |
             // GitHub caps issue comment bodies at 65,536 chars; we leave a
             // 5,536-char safety margin so the footer + truncation notice +
-            // any future API additions stay below the hard limit (TR-3).
+            // any future API additions stay below the hard limit.
             const MAX_BODY = 60000;
             const FOOTER = '> Retrigger this review by commenting `@codex` (maintainers only).';
             const TRUNC_NOTICE = '\n\n_[truncated — see workflow run for full output]_';
