@@ -377,5 +377,79 @@ grep -qE 'effective_prompt_file' "$WORKFLOW_FILE" \
   || fail "REQ-009: prompt step must emit 'effective_prompt_file' output"
 pass "REQ-009: prompt step emits effective_prompt_inline + effective_prompt_file outputs"
 
+# --- Task 1.6: Codex step wired to resolved prompt + passthroughs (REQ-011) -
+if have_yq; then
+  codex_prompt=$(
+    yq '.jobs.review.steps[] | select(.id == "codex") | .with.prompt' "$WORKFLOW_FILE"
+  )
+  echo "$codex_prompt" | grep -qE 'steps\.prompt\.outputs\.effective_prompt_inline' \
+    || fail "REQ-011: codex.with.prompt must reference steps.prompt.outputs.effective_prompt_inline (got: $codex_prompt)"
+
+  codex_pf=$(
+    yq '.jobs.review.steps[] | select(.id == "codex") | .with["prompt-file"]' "$WORKFLOW_FILE"
+  )
+  echo "$codex_pf" | grep -qE 'steps\.prompt\.outputs\.effective_prompt_file' \
+    || fail "REQ-011: codex.with.prompt-file must reference steps.prompt.outputs.effective_prompt_file (got: $codex_pf)"
+
+  codex_sandbox=$(
+    yq '.jobs.review.steps[] | select(.id == "codex") | .with.sandbox' "$WORKFLOW_FILE"
+  )
+  echo "$codex_sandbox" | grep -qE 'inputs\.sandbox|^read-only$' \
+    || fail "REQ-011: codex.with.sandbox must reference inputs.sandbox or be read-only (got: $codex_sandbox)"
+
+  codex_model=$(
+    yq '.jobs.review.steps[] | select(.id == "codex") | .with.model // ""' "$WORKFLOW_FILE"
+  )
+  echo "$codex_model" | grep -qE 'inputs\.model' \
+    || fail "REQ-011: codex.with.model must reference inputs.model (got: $codex_model)"
+
+  codex_coe=$(
+    yq '.jobs.review.steps[] | select(.id == "codex") | .["continue-on-error"]' "$WORKFLOW_FILE"
+  )
+  [ "$codex_coe" = "true" ] \
+    || fail "REQ-014: codex step must keep continue-on-error: true (got: $codex_coe)"
+fi
+pass "REQ-011: codex step wired to resolved prompt + passthroughs"
+
+# --- Task 1.7: comment_on_pr input declared (REQ-012 Scenario 2) ------------
+if have_yq; then
+  cop_type=$(yq '.on.workflow_call.inputs.comment_on_pr.type // ""' "$WORKFLOW_FILE")
+  cop_default=$(yq '.on.workflow_call.inputs.comment_on_pr.default // "MISSING"' "$WORKFLOW_FILE")
+  [ "$cop_type" = "boolean" ] \
+    || fail "REQ-012: comment_on_pr must be 'type: boolean' (got: $cop_type)"
+  [ "$cop_default" = "true" ] \
+    || fail "REQ-012: comment_on_pr default must be true (got: $cop_default)"
+fi
+pass "REQ-012: comment_on_pr boolean input with default true"
+
+# --- Task 1.7: comment step gated by comment_on_pr (REQ-012 Scenario 2) -----
+if have_yq; then
+  comment_if=$(
+    yq '.jobs.review.steps[] | select(.uses == "actions/github-script@v7") | .if // ""' "$WORKFLOW_FILE"
+  )
+  echo "$comment_if" | grep -qE 'inputs\.comment_on_pr' \
+    || fail "REQ-012: github-script comment step must be gated by inputs.comment_on_pr (got: $comment_if)"
+fi
+pass "REQ-012: comment step gated by inputs.comment_on_pr"
+
+# --- Task 1.7: env-hardened body (REQ-012 / hardening) ----------------------
+grep -qE 'process\.env\.CODEX_FINAL_MESSAGE' "$WORKFLOW_FILE" \
+  || fail "hardening: comment script must read CODEX_FINAL_MESSAGE from process.env (no \${{ }} interpolation into JS)"
+pass "hardening: comment body read from process.env (no JS interpolation)"
+
+# --- Task 1.7: retrigger footer (REQ-013) -----------------------------------
+# Footer line MUST start with '> ' (Markdown blockquote), contain the literal
+# token 'Retrigger', and contain '@codex'. The locked wording is:
+#   > Retrigger this review by commenting `@codex` (maintainers only).
+grep -qE 'Retrigger this review' "$WORKFLOW_FILE" \
+  || fail "REQ-013: comment script must contain 'Retrigger this review' footer text"
+grep -qE "@codex" "$WORKFLOW_FILE" \
+  || fail "REQ-013: footer must mention '@codex'"
+# The footer is built as a JS string literal; assert the leading '> ' marker
+# appears in proximity to 'Retrigger'.
+grep -qE "'>[[:space:]]+Retrigger|\"\\>[[:space:]]+Retrigger|> Retrigger" "$WORKFLOW_FILE" \
+  || fail "REQ-013: footer must be Markdown blockquote (line begins '> ' before 'Retrigger')"
+pass "REQ-013: retrigger footer present, blockquote-formatted, mentions @codex"
+
 echo
 echo "ALL CODEX-WORKFLOW CHECKS PASSED (Batch 0 + Batch 1 in progress)"

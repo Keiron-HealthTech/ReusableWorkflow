@@ -41,6 +41,13 @@ on:
         required: false
         type: string
         default: ""
+      # Caller toggle: post Codex output as a PR comment (default true).
+      # Set false to dry-run the workflow without making any PR comments.
+      comment_on_pr:
+        description: "If false, skip posting the PR comment (Codex still runs)."
+        required: false
+        type: boolean
+        default: true
     secrets:
       openai_api_key:
         description: "OpenAI API key used by openai/codex-action@v1."
@@ -188,26 +195,45 @@ jobs:
             echo "resolved prompt: ${DEFAULT_PROMPT} (baked default)"
           fi
 
-      # 6. Run Codex with a hardcoded one-line prompt.
+      # 6. Run Codex with the resolved prompt + caller-tunable passthroughs.
       #
-      # Tracer scope (will be replaced in Task 1.6 with resolved prompt
-      # outputs from the prompt-resolution step added in Task 1.5).
+      # Exactly one of `prompt` / `prompt-file` is non-empty per run (the
+      # resolution step in Task 1.5 enforces this). Codex treats an empty
+      # value as "not provided" so passing both is safe.
+      #
+      # `continue-on-error: true` (REQ-014, R4 mitigation): a Codex outage
+      # or an invalid API key MUST NOT fail the caller's PR check.
       - name: Run Codex
         id: codex
         uses: openai/codex-action@v1
         continue-on-error: true
         with:
           openai-api-key: ${{ secrets.openai_api_key }}
-          prompt: "Review this PR for obvious issues."
+          prompt: ${{ steps.prompt.outputs.effective_prompt_inline }}
+          prompt-file: ${{ steps.prompt.outputs.effective_prompt_file }}
+          model: ${{ inputs.model }}
           sandbox: read-only
           safety-strategy: drop-sudo
 
-      # 5. Post the Codex final-message as a PR comment.
+      # 7. Post the Codex final-message as a PR comment.
       #
-      # Final-message is passed via env (NOT direct ${{ }} interpolation
-      # into the script body) to neutralize any code-injection risk if
-      # Codex output ever contains JS string-terminating characters.
+      # Hardening: CODEX_FINAL_MESSAGE is passed via env, NEVER interpolated
+      # into the JS body via ${{ }}. This neutralizes any code-injection risk
+      # if model output ever contains JS string-terminating characters.
+      #
+      # Footer: every comment ends with a Markdown blockquote line telling
+      # the reader how to re-trigger the review (REQ-013, D17). Wording is
+      # locked structurally: line begins '> ', contains 'Retrigger' and
+      # '@codex'. The footer is appended LAST so it survives truncation
+      # (Task 1.8) — see the body-build block below.
+      #
+      # Gate: skipped entirely when caller passes `comment_on_pr: false`
+      # (REQ-012 Scenario 2 — useful for dry-runs / smoke tests).
+      #
+      # `continue-on-error: true` (REQ-014): a GitHub API 5xx on
+      # createComment MUST NOT fail the caller's PR check.
       - name: Post PR comment
+        if: ${{ inputs.comment_on_pr }}
         uses: actions/github-script@v7
         continue-on-error: true
         env:
@@ -215,11 +241,13 @@ jobs:
           PR_NUMBER: ${{ inputs.pr_number }}
         with:
           script: |
+            const FOOTER = '> Retrigger this review by commenting `@codex` (maintainers only).';
             const codexOutput = process.env.CODEX_FINAL_MESSAGE || '';
             const prNumber = parseInt(process.env.PR_NUMBER, 10);
-            const body = codexOutput.trim().length > 0
+            const reviewBody = codexOutput.trim().length > 0
               ? codexOutput
               : '_Codex returned no output for this run._';
+            const body = `${reviewBody}\n\n${FOOTER}`;
             await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
