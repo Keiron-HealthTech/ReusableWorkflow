@@ -451,5 +451,86 @@ grep -qE "'>[[:space:]]+Retrigger|\"\\>[[:space:]]+Retrigger|> Retrigger" "$WORK
   || fail "REQ-013: footer must be Markdown blockquote (line begins '> ' before 'Retrigger')"
 pass "REQ-013: retrigger footer present, blockquote-formatted, mentions @codex"
 
+# --- Task 1.8: 60K-char body truncation with continuation notice (TR-3) -----
+# Comment body MUST be capped at <= 65000 chars (GitHub's hard limit) with
+# a documented safety margin; we lock 60000 here. Truncation MUST happen
+# BEFORE the footer is appended so the footer survives.
+grep -qE 'MAX_BODY[[:space:]]*=[[:space:]]*60000|60000' "$WORKFLOW_FILE" \
+  || fail "TR-3: comment script must define a numeric truncation cap (60000 chars)"
+pass "TR-3: 60000-char truncation cap present"
+
+grep -qE '\[truncated|truncated' "$WORKFLOW_FILE" \
+  || fail "TR-3: comment script must emit a 'truncated' continuation notice"
+pass "TR-3: continuation notice present"
+
+# Footer must remain the absolute last appended fragment — assert by
+# requiring `${truncated}\n\n${FOOTER}` ordering (loose check).
+if have_yq; then
+  comment_script=$(
+    yq '.jobs.review.steps[]
+         | select(.uses == "actions/github-script@v7")
+         | .with.script' "$WORKFLOW_FILE"
+  )
+  trunc_idx=$(echo "$comment_script" | grep -n 'truncated' | head -1 | cut -d: -f1 || true)
+  footer_idx=$(echo "$comment_script" | grep -n 'FOOTER\|Retrigger this review' | tail -1 | cut -d: -f1 || true)
+  if [ -n "$trunc_idx" ] && [ -n "$footer_idx" ]; then
+    [ "$trunc_idx" -lt "$footer_idx" ] \
+      || fail "TR-3: truncation logic must precede the footer append in the comment script"
+  fi
+fi
+pass "TR-3: truncation precedes footer append"
+
+# --- Task 1.9: Fail-fast assertions for resolution + checkout steps ---------
+# REQ-006 Scenario 3: refs step must NOT have continue-on-error.
+# REQ-010: prompt resolution step must NOT have continue-on-error.
+# REQ-008: sparse-checkout step must NOT have continue-on-error (a missing
+# default prompt is a fail-fast condition handled by the prompt step).
+# Pre-fetch step must NOT have continue-on-error (REQ-007: refs must be on
+# disk before Codex diffs them).
+if have_yq; then
+  for step_id in refs prompt; do
+    coe=$(
+      yq ".jobs.review.steps[] | select(.id == \"$step_id\") | .[\"continue-on-error\"] // \"absent\"" "$WORKFLOW_FILE"
+    )
+    [ "$coe" = "absent" ] \
+      || fail "fail-fast: step id=$step_id must NOT have continue-on-error (got: $coe)"
+  done
+
+  sparse_coe=$(
+    yq '.jobs.review.steps[]
+         | select(.uses == "actions/checkout@v4")
+         | select(.with.path == ".codex-defaults")
+         | .["continue-on-error"] // "absent"' "$WORKFLOW_FILE"
+  )
+  [ "$sparse_coe" = "absent" ] \
+    || fail "fail-fast: sparse-checkout step must NOT have continue-on-error (got: $sparse_coe)"
+
+  caller_checkout_coe=$(
+    yq '.jobs.review.steps[]
+         | select(.uses == "actions/checkout@v4")
+         | select(.with.path // "" == "")
+         | .["continue-on-error"] // "absent"' "$WORKFLOW_FILE"
+  )
+  [ "$caller_checkout_coe" = "absent" ] \
+    || fail "fail-fast: caller checkout step must NOT have continue-on-error (got: $caller_checkout_coe)"
+
+  prefetch_coe=$(
+    yq '.jobs.review.steps[]
+         | select(.name == "Pre-fetch PR refs")
+         | .["continue-on-error"] // "absent"' "$WORKFLOW_FILE"
+  )
+  [ "$prefetch_coe" = "absent" ] \
+    || fail "fail-fast: pre-fetch step must NOT have continue-on-error (got: $prefetch_coe)"
+fi
+pass "fail-fast: refs / prompt / sparse / caller-checkout / pre-fetch all without continue-on-error"
+
+# --- Task 1.9: Exactly TWO continue-on-error: true total --------------------
+# Codex + comment, no more. If a future task adds it elsewhere by accident
+# this assertion catches it (the count is documented in the script header).
+exact_coe=$(grep -cE '^\s*continue-on-error:\s*true\s*$' "$WORKFLOW_FILE" || true)
+[ "$exact_coe" = "2" ] \
+  || fail "fail-fast: expected exactly 2 'continue-on-error: true' lines (Codex + comment), found $exact_coe"
+pass "fail-fast: exactly 2 continue-on-error: true lines (Codex + comment)"
+
 echo
-echo "ALL CODEX-WORKFLOW CHECKS PASSED (Batch 0 + Batch 1 in progress)"
+echo "ALL CODEX-WORKFLOW CHECKS PASSED (Batch 0 + Batch 1)"

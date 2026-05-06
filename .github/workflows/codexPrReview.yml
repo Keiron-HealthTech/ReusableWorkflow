@@ -241,12 +241,25 @@ jobs:
           PR_NUMBER: ${{ inputs.pr_number }}
         with:
           script: |
+            // GitHub caps issue comment bodies at 65,536 chars; we leave a
+            // 5,536-char safety margin so the footer + truncation notice +
+            // any future API additions stay below the hard limit (TR-3).
+            const MAX_BODY = 60000;
             const FOOTER = '> Retrigger this review by commenting `@codex` (maintainers only).';
+            const TRUNC_NOTICE = '\n\n_[truncated — see workflow run for full output]_';
+
             const codexOutput = process.env.CODEX_FINAL_MESSAGE || '';
             const prNumber = parseInt(process.env.PR_NUMBER, 10);
-            const reviewBody = codexOutput.trim().length > 0
+            let reviewBody = codexOutput.trim().length > 0
               ? codexOutput
               : '_Codex returned no output for this run._';
+
+            // Truncate BEFORE appending the footer so the footer is always
+            // the last line of the comment.
+            if (reviewBody.length > MAX_BODY) {
+              reviewBody = reviewBody.slice(0, MAX_BODY) + TRUNC_NOTICE;
+            }
+
             const body = `${reviewBody}\n\n${FOOTER}`;
             await github.rest.issues.createComment({
               owner: context.repo.owner,
