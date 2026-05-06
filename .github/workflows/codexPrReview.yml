@@ -129,14 +129,15 @@ jobs:
           fi
 
       # 5. Sparse second-checkout of the ReusableWorkflow repo to fetch the
-      # default review prompt at the same ref the caller resolved when it
-      # invoked this workflow.
+      # default review prompt.
       #
-      # Pinning to `github.workflow_sha` keeps the prompt and the workflow
-      # logic in lockstep — a caller that pinned `@v1.2.3` gets the prompt
-      # bundled with v1.2.3, not the latest `main`. The `|| github.sha`
-      # fallback covers the rare case where `workflow_sha` is empty (when the
-      # reusable is dispatched directly).
+      # IMPORTANT: in reusable workflows, the `github` context is associated
+      # with the caller workflow, so `github.workflow_sha` cannot be used to
+      # resolve this repository's workflow commit.
+      #
+      # Use a stable branch ref here so default-prompt resolution is reliable
+      # for cross-repo callers that do not pass `review_prompt` or
+      # `prompt_file`.
       #
       # Sparse-checkout limits the fetch to a single file, ~50ms vs full
       # repo clone. `cone-mode: false` is required because we want a single
@@ -150,7 +151,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: Keiron-HealthTech/ReusableWorkflow
-          ref: ${{ github.workflow_sha || github.sha }}
+          ref: main
           path: .codex-defaults
           sparse-checkout: |
             .github/codex/pr-review.prompt.md
