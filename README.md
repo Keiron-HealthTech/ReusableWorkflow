@@ -21,7 +21,7 @@ on:
       - "develop"
 jobs:
   deployment:
-    uses: keiron-git/ReusableWorkflow/.github/workflows/buildKanikoAndChangeImage.yml@main
+    uses: Keiron-HealthTech/ReusableWorkflow/.github/workflows/buildKanikoAndChangeImage.yml@main
     with:
       namespace: NAMESPACES
       app_name: APPNAME
@@ -45,7 +45,7 @@ on:
       - "develop"
 jobs:
   deployment:
-    uses: keiron-git/ReusableWorkflow/.github/workflows/buildImageAndPublishECR.yml@main
+    uses: Keiron-HealthTech/ReusableWorkflow/.github/workflows/buildImageAndPublishECR.yml@main
     with:
       namespace: NAMESPACES
       app_name: APPNAME
