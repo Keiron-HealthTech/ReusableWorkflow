@@ -36,7 +36,7 @@ can mask permanent failures.
 
 ## Tests
 
-Are new behaviors covered? Are tests deterministic (no `sleep`, no time-of-day
+Are new behaviors covered? Are tests deterministic (no time-of-day
 dependencies, no order-of-execution coupling)? Do they actually exercise the
 change, or just import the module? Flag tests that pass without the new code.
 
