@@ -17,20 +17,29 @@
 #   - grep -E / -F                                       — substring assertions
 #   - jq                                                 — used only if needed
 #
-# `yq` (mikefarah v4) is NOT required — assertions use grep patterns instead,
-# because yq is not pre-installed on this workstation. See plan risk P3 / P4.
+# `yq` (mikefarah v4) is preferred for richer YAML queries when available;
+# otherwise we fall back to grep + the awk `assert_in_window` helper. Batch 0
+# was authored without yq; Batch 1+ uses yq when present (see plan risk P3/P4).
 #
-# REQ → assertion mapping (Batch 0 tracer scope only — later batches append):
-#   REQ-001  : workflow file exists, is workflow_call               (asserts 1, 2)
-#   REQ-002  : pr_number input declared as required number          (assert 3)
-#   REQ-004  : openai_api_key secret declared required              (assert 4)
-#   REQ-005  : workflow-level permissions block                     (assert 5)
-#   REQ-011  : pinned to openai/codex-action@v1, sandbox/safety     (asserts 6,8,9)
-#   REQ-012  : comment posted via actions/github-script@v7          (assert 7)
-#   REQ-014  : continue-on-error on Codex + comment steps           (asserts 10,11)
+# REQ → assertion mapping (grows monotonically across batches):
+#   REQ-001  : workflow file exists, is workflow_call               (Batch 0)
+#   REQ-002  : pr_number input declared as required number          (Batch 0)
+#   REQ-003  : review_prompt / prompt_file optional string inputs   (Batch 1.1)
+#   REQ-004  : openai_api_key secret declared required              (Batch 0)
+#   REQ-005  : workflow-level permissions block                     (Batch 0)
+#   REQ-006  : ref resolution step (gh pr view fallback, fail-fast) (Batch 1.1)
+#   REQ-007  : pre-fetch base + head refs                           (Batch 1.1)
+#   REQ-008  : sparse second-checkout of .codex-defaults/           (Batch 1.4)
+#   REQ-009  : prompt resolution precedence                         (Batch 1.5)
+#   REQ-010  : fail-fast on missing prompt source                   (Batch 1.5)
+#   REQ-011  : pinned @v1, sandbox/safety, full passthroughs        (Batch 0+1.6)
+#   REQ-012  : one comment posted via github-script@v7, gated       (Batch 0+1.7)
+#   REQ-013  : retrigger footer (Markdown blockquote)               (Batch 1.7)
+#   REQ-014  : continue-on-error on Codex + comment steps only      (Batch 0+1.9)
+#   TR-3     : 60K char body truncation                             (Batch 1.8)
 #
 # REQ-021/REQ-022 (canary observations) are deferred to verify phase.
-# REQ-003 / REQ-006..010 / REQ-013 / REQ-015..020 land in Batch 1+.
+# REQ-015..020 land in Batches 2/3.
 
 set -euo pipefail
 
@@ -150,5 +159,110 @@ if grep -qE 'responses_api_endpoint|azure_endpoint|azure_api_version' "$WORKFLOW
 fi
 pass "D16: no Azure passthrough inputs"
 
+################################################################################
+# BATCH 1 — Core reusable workflow (full signature, sparse-checkout, prompt
+# resolution, comment footer, truncation).
+################################################################################
+
+# --- Helpers (yq-preferred; fall back to assert_in_window) -------------------
+
+have_yq() { command -v yq >/dev/null 2>&1; }
+
+# --- Task 1.1: Full input + secret signature (REQ-003) -----------------------
+#
+# Caller-tunable optional inputs `review_prompt` and `prompt_file` MUST be
+# declared as string with default empty (so the prompt-resolution step in
+# Task 1.5 can branch on emptiness without further validation).
+
+if have_yq; then
+  rp_type=$(yq '.on.workflow_call.inputs.review_prompt.type // ""' "$WORKFLOW_FILE")
+  rp_default=$(yq '.on.workflow_call.inputs.review_prompt.default // "MISSING"' "$WORKFLOW_FILE")
+  pf_type=$(yq '.on.workflow_call.inputs.prompt_file.type // ""' "$WORKFLOW_FILE")
+  pf_default=$(yq '.on.workflow_call.inputs.prompt_file.default // "MISSING"' "$WORKFLOW_FILE")
+  [ "$rp_type" = "string" ] \
+    || fail "REQ-003: review_prompt must be 'type: string' (got: $rp_type)"
+  [ "$rp_default" = "" ] \
+    || fail "REQ-003: review_prompt default must be empty string (got: '$rp_default')"
+  [ "$pf_type" = "string" ] \
+    || fail "REQ-003: prompt_file must be 'type: string' (got: $pf_type)"
+  [ "$pf_default" = "" ] \
+    || fail "REQ-003: prompt_file default must be empty string (got: '$pf_default')"
+else
+  # Fallback: best-effort header window match.
+  assert_in_window "$WORKFLOW_FILE" '^[[:space:]]*review_prompt:[[:space:]]*$' 6 \
+    'type:[[:space:]]*string' \
+    'default:[[:space:]]*""' \
+    || fail "REQ-003: review_prompt must be string with default \"\""
+  assert_in_window "$WORKFLOW_FILE" '^[[:space:]]*prompt_file:[[:space:]]*$' 6 \
+    'type:[[:space:]]*string' \
+    'default:[[:space:]]*""' \
+    || fail "REQ-003: prompt_file must be string with default \"\""
+fi
+pass "REQ-003: review_prompt + prompt_file optional string inputs declared"
+
+# --- Task 1.1: Ref resolution step uses gh pr view (REQ-006 Scenarios 2, 3) --
+# The step MUST use `gh pr view ... --json headRefOid,baseRefOid` so callers
+# can pass only `pr_number` and have the workflow resolve both SHAs.
+grep -qE 'gh pr view' "$WORKFLOW_FILE" \
+  || fail "REQ-006: ref-resolution step must shell out to 'gh pr view'"
+grep -qE 'headRefOid' "$WORKFLOW_FILE" \
+  || fail "REQ-006: ref-resolution step must capture 'headRefOid'"
+grep -qE 'baseRefOid' "$WORKFLOW_FILE" \
+  || fail "REQ-006: ref-resolution step must capture 'baseRefOid' (REQ-007 needs base)"
+pass "REQ-006: ref-resolution step resolves head + base via gh pr view"
+
+# --- Task 1.1: Refs step has id: refs (so checkout can reference outputs) ---
+if have_yq; then
+  refs_id_present=$(yq '[.jobs.review.steps[] | select(.id == "refs")] | length' "$WORKFLOW_FILE")
+  [ "$refs_id_present" = "1" ] \
+    || fail "REQ-006: refs resolution step must have 'id: refs'"
+else
+  grep -qE '^[[:space:]]+id:[[:space:]]*refs[[:space:]]*$' "$WORKFLOW_FILE" \
+    || fail "REQ-006: refs resolution step must have 'id: refs'"
+fi
+pass "REQ-006: ref-resolution step has 'id: refs'"
+
+# --- Task 1.1: Pre-fetch step exists (REQ-007) -------------------------------
+# Some step MUST run `git fetch origin <base_sha> <head_sha>` (or equivalent)
+# after the caller checkout so the diff is available to Codex.
+grep -qE 'git fetch.*origin' "$WORKFLOW_FILE" \
+  || fail "REQ-007: pre-fetch step missing — expected 'git fetch origin <base> <head>'"
+pass "REQ-007: pre-fetch step runs 'git fetch origin'"
+
+# --- Task 1.2: Tightened caller checkout (REQ-006 Scenario 1) ---------------
+# The first checkout step (NOT the sparse second-checkout — that one has
+# `path:` set) MUST pin to the resolved head SHA with full history.
+if have_yq; then
+  caller_checkout_count=$(
+    yq '[.jobs.review.steps[]
+         | select(.uses == "actions/checkout@v4")
+         | select(.with.path // "" == "")] | length' "$WORKFLOW_FILE"
+  )
+  [ "$caller_checkout_count" = "1" ] \
+    || fail "REQ-006: expected exactly 1 caller-side actions/checkout@v4 step (no path:), found $caller_checkout_count"
+  caller_ref=$(
+    yq '.jobs.review.steps[]
+         | select(.uses == "actions/checkout@v4")
+         | select(.with.path // "" == "")
+         | .with.ref' "$WORKFLOW_FILE"
+  )
+  caller_depth=$(
+    yq '.jobs.review.steps[]
+         | select(.uses == "actions/checkout@v4")
+         | select(.with.path // "" == "")
+         | .with["fetch-depth"]' "$WORKFLOW_FILE"
+  )
+  echo "$caller_ref" | grep -qE 'steps\.refs\.outputs\.head_sha' \
+    || fail "REQ-006: caller checkout 'ref' must reference steps.refs.outputs.head_sha (got: $caller_ref)"
+  [ "$caller_depth" = "0" ] \
+    || fail "REQ-006: caller checkout fetch-depth must be 0 (got: $caller_depth)"
+else
+  grep -qE 'ref:[[:space:]]*\$\{\{[[:space:]]*steps\.refs\.outputs\.head_sha[[:space:]]*\}\}' "$WORKFLOW_FILE" \
+    || fail "REQ-006: caller checkout missing ref: \${{ steps.refs.outputs.head_sha }}"
+  grep -qE 'fetch-depth:[[:space:]]*0[[:space:]]*$' "$WORKFLOW_FILE" \
+    || fail "REQ-006: caller checkout missing fetch-depth: 0"
+fi
+pass "REQ-006: caller checkout pinned to head_sha with full history"
+
 echo
-echo "ALL CODEX-WORKFLOW CHECKS PASSED (Batch 0 tracer scope)"
+echo "ALL CODEX-WORKFLOW CHECKS PASSED (Batch 0 + Batch 1 in progress)"

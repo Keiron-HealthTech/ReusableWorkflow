@@ -1,30 +1,46 @@
 name: Codex PR Review
 
-# Tracer-bullet reusable workflow.
+# Reusable workflow that runs `openai/codex-action@v1` against a caller's PR
+# and posts the model's review as a single PR comment.
 #
-# Status: BATCH 0 (tracer) — minimal end-to-end wiring only.
-# Spec: see flow/codex-action-integration/spec (engram #193) — REQ-001, REQ-002,
-# REQ-004, REQ-005, REQ-011 (Scenario 1 only — pinning), REQ-012 (one comment per
-# run), REQ-014 (continue-on-error on Codex + comment).
+# Spec: flow/codex-action-integration/spec (engram #193) — REQ-001..REQ-020.
+# Design: flow/codex-action-integration/design (engram #194, #195).
+# Plan: flow/codex-action-integration/plan (engram #196), Batch 1.
 #
-# Deliberately NOT YET PRESENT (these land in Batch 1+):
-#   - head_sha / base_sha override inputs and gh-pr-view fallback step
-#   - sparse second-checkout of .codex-defaults/
-#   - prompt resolution step (override precedence)
-#   - retrigger footer + body truncation
-#   - optional Slack failure notification
-#   - prompt_file / review_prompt override surface
+# Status: BATCH 1 in progress — full input/secret signature, ref resolution,
+# sparse-checkout of default prompt, prompt-resolution precedence, comment
+# footer + truncation. Default prompt FILE landed in Batch 2; README in Batch 3;
+# optional Slack failure ping in Batch 4.
 #
-# Caller wiring example: see README.md "Codex PR Review" section
-# (also added in a later batch).
+# Caller wiring example: see README.md "Codex PR Review" section.
 
 on:
   workflow_call:
     inputs:
+      # Required: which PR to review.
       pr_number:
         description: "Pull request number to review."
         required: true
         type: number
+      # Optional inline prompt override. Wins over `prompt_file` and the baked
+      # default per REQ-009 precedence.
+      review_prompt:
+        description: "Inline review prompt body. Wins over prompt_file + default."
+        required: false
+        type: string
+        default: ""
+      # Optional caller-side prompt path (resolved against the caller's checkout).
+      prompt_file:
+        description: "Path to prompt file inside the caller's repo."
+        required: false
+        type: string
+        default: ""
+      # Optional Codex model override (passes through to openai/codex-action@v1).
+      model:
+        description: "Codex model identifier (e.g., 'gpt-5'). Empty = action default."
+        required: false
+        type: string
+        default: ""
     secrets:
       openai_api_key:
         description: "OpenAI API key used by openai/codex-action@v1."
@@ -39,44 +55,54 @@ jobs:
   review:
     runs-on: ubuntu-latest
     steps:
-      # 1. Resolve the PR head SHA via `gh pr view`.
+      # 1. Resolve PR head + base SHAs via `gh pr view`.
       #
-      # `pull_request` and `issue_comment` events expose the head SHA
-      # in different shapes (and `issue_comment` doesn't expose one at
-      # all without an extra API call), so we always resolve it the
-      # same way regardless of the caller's trigger. This step has no
-      # `continue-on-error:` — if it fails, the run must fail (REQ-006
-      # Scenario 3 fail-fast guarantee, asserted in Batch 1).
-      - name: Resolve PR head SHA
+      # Caller passes only `pr_number`; the workflow resolves both refs from
+      # the GitHub API. NO `continue-on-error` here — REQ-006 Scenario 3 +
+      # REQ-010 mandate fail-fast on any resolution error.
+      - name: Resolve PR refs
         id: refs
         env:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ inputs.pr_number }}
         run: |
           set -euo pipefail
-          head_sha=$(gh pr view "$PR_NUMBER" \
+          pr_data=$(gh pr view "$PR_NUMBER" \
             --repo "${{ github.repository }}" \
-            --json headRefOid \
-            --jq '.headRefOid')
+            --json headRefOid,baseRefOid)
+          head_sha=$(echo "$pr_data" | jq -r '.headRefOid')
+          base_sha=$(echo "$pr_data" | jq -r '.baseRefOid')
           if [ -z "$head_sha" ] || [ "$head_sha" = "null" ]; then
             echo "::error::could not resolve head SHA for PR #${PR_NUMBER}"
             exit 1
           fi
+          if [ -z "$base_sha" ] || [ "$base_sha" = "null" ]; then
+            echo "::error::could not resolve base SHA for PR #${PR_NUMBER}"
+            exit 1
+          fi
           echo "head_sha=${head_sha}" >> "$GITHUB_OUTPUT"
+          echo "base_sha=${base_sha}" >> "$GITHUB_OUTPUT"
 
-      # 2. Check out the caller repo at the resolved head SHA.
+      # 2. Check out the caller repo at the resolved head SHA, full history.
       - name: Checkout caller at PR head
         uses: actions/checkout@v4
         with:
           ref: ${{ steps.refs.outputs.head_sha }}
           fetch-depth: 0
 
-      # 3. Run Codex with a hardcoded one-line prompt.
+      # 3. Pre-fetch base + head refs so Codex can diff them locally (REQ-007).
+      - name: Pre-fetch PR refs
+        env:
+          BASE_SHA: ${{ steps.refs.outputs.base_sha }}
+          HEAD_SHA: ${{ steps.refs.outputs.head_sha }}
+        run: |
+          set -euo pipefail
+          git fetch origin "$BASE_SHA" "$HEAD_SHA"
+
+      # 4. Run Codex with a hardcoded one-line prompt.
       #
-      # Tracer scope: prompt is intentionally inline + literal so that
-      # this batch proves only the wiring (caller -> reusable -> Codex
-      # -> comment). Real prompt resolution (review_prompt / prompt_file
-      # / sparse-checked-out default) lands in Batch 1.
+      # Tracer scope (will be replaced in Task 1.6 with resolved prompt
+      # outputs from the prompt-resolution step added in Task 1.5).
       - name: Run Codex
         id: codex
         uses: openai/codex-action@v1
@@ -87,13 +113,11 @@ jobs:
           sandbox: read-only
           safety-strategy: drop-sudo
 
-      # 4. Post the Codex final-message as a PR comment.
+      # 5. Post the Codex final-message as a PR comment.
       #
       # Final-message is passed via env (NOT direct ${{ }} interpolation
       # into the script body) to neutralize any code-injection risk if
-      # Codex output ever contains JS string-terminating characters —
-      # this is the GitHub-recommended hardening for actions/github-script.
-      # No retrigger footer, no truncation: those land in Batch 1.7 / 1.8.
+      # Codex output ever contains JS string-terminating characters.
       - name: Post PR comment
         uses: actions/github-script@v7
         continue-on-error: true
