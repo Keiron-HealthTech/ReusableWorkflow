@@ -832,5 +832,58 @@ codex_section | grep -qF '${{ github.event.pull_request.number || github.event.i
   || fail "REQ-019: caller example must converge pr_number with the '|| github.event.issue.number' fallback"
 pass "REQ-019: pr_number convergence expression present"
 
+# --- Task 3.6: prompt overrides + permissions + cost control ---
+# (REQ-020 / supports REQ-009: documents the override surface and the
+# caller-side permissions / cost-control patterns adopters need.)
+
+codex_section | grep -qF 'review_prompt:' \
+  || fail "REQ-020: Codex section must show the review_prompt: inline override input"
+pass "REQ-020: review_prompt inline override example present"
+
+codex_section | grep -qF 'prompt_file:' \
+  || fail "REQ-020: Codex section must show the prompt_file: override input"
+pass "REQ-020: prompt_file override example present"
+
+# Default-fallback behavior must be stated.
+codex_section | grep -qiE '(default[- ]prompt|default review prompt|.github/codex/pr-review.prompt.md)' \
+  || fail "REQ-020: Codex section must describe the default prompt fallback behavior"
+pass "REQ-020: default prompt fallback behavior documented"
+
+# Mutual-exclusion / precedence: when both inputs are set, inline wins.
+codex_section | grep -qiE 'inline.*win|review_prompt.*win|both.*set' \
+  || fail "REQ-020: Codex section must describe override precedence when both inputs are set"
+pass "REQ-020: override precedence described"
+
+# Fail-fast on missing prompt_file path.
+codex_section | grep -qiE 'fail.*fast|does not exist|missing path' \
+  || fail "REQ-020: Codex section must mention fail-fast on missing prompt_file"
+pass "REQ-020: fail-fast on missing prompt_file documented"
+
+# Permissions guidance — at least the three required permissions named.
+for perm in 'contents: read' 'pull-requests: write' 'issues: write'; do
+  codex_section | grep -qF "$perm" \
+    || fail "REQ-020: permissions guidance must list '$perm'"
+  pass "REQ-020: permissions guidance lists '$perm'"
+done
+
+# Cost-control note: paths: filter and @codex-only adoption.
+codex_section | grep -qF 'paths:' \
+  || fail "REQ-020: Codex section must show 'paths:' filter as a cost-control pattern"
+pass "REQ-020: paths: filter cost-control pattern present"
+
+codex_section | grep -qiE '(cost|noisy|mono[- ]?repo)' \
+  || fail "REQ-020: Codex section must mention cost-control rationale"
+pass "REQ-020: cost-control rationale present"
+
+# A dedicated 'Customizing the prompt' or equivalent subheading.
+codex_section | grep -qiE '^#{2,4}[[:space:]]+.*([Cc]ustomi[zs]|[Pp]rompt|[Oo]verride)' \
+  || fail "REQ-020: Codex section must contain a dedicated prompt-customization subheading"
+pass "REQ-020: dedicated prompt-customization subheading present"
+
+# A dedicated cost-control subheading.
+codex_section | grep -qiE '^#{2,4}[[:space:]]+.*([Cc]ost|[Ss]cope|[Pp]aths)' \
+  || fail "REQ-020: Codex section must contain a dedicated cost-control subheading"
+pass "REQ-020: dedicated cost-control subheading present"
+
 echo
 echo "ALL CODEX-WORKFLOW CHECKS PASSED (Batch 0 + Batch 1 + Batch 2 + Batch 3)"
