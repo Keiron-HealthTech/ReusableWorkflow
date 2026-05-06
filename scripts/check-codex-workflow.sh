@@ -783,5 +783,44 @@ codex_section \
   || fail "REQ-017: fork-PR subsection must mention @codex retrigger as the escape hatch"
 pass "REQ-017: fork-PR subsection cross-references @codex retrigger"
 
+# --- Task 3.4: REQ-018 — author-association retrigger gate documentation ---
+# The example must include the issue_comment trigger guard, AND a dedicated
+# subsection must explain WHY only OWNER/MEMBER/COLLABORATOR are allowed.
+
+codex_section | grep -qF 'github.event.issue.pull_request' \
+  || fail "REQ-018: caller example must guard issue_comment with github.event.issue.pull_request != null"
+pass "REQ-018: issue_comment example checks pull_request != null"
+
+codex_section | grep -qF "contains(github.event.comment.body, '@codex')" \
+  || fail "REQ-018: caller example must check comment body contains '@codex'"
+pass "REQ-018: caller example checks @codex in comment body"
+
+codex_section | grep -qF 'fromJSON(' \
+  || fail "REQ-018: caller example must use fromJSON([...]) for author_association list"
+pass "REQ-018: caller example uses fromJSON for association list"
+
+# All three allowed associations must be in the README (in the example
+# expression itself, this is exact-string).
+for assoc in OWNER MEMBER COLLABORATOR; do
+  codex_section | grep -qF "$assoc" \
+    || fail "REQ-018: caller example must list $assoc in allowed author_association"
+  pass "REQ-018: caller example lists $assoc"
+done
+
+codex_section | grep -qF 'author_association' \
+  || fail "REQ-018: caller example must reference github.event.comment.author_association"
+pass "REQ-018: caller example references author_association"
+
+# Dedicated subsection explaining the gate.
+codex_section | grep -qiE '^#{2,4}[[:space:]]+.*[Aa]uthor[- ]?association' \
+  || fail "REQ-018: Codex section must contain a dedicated author-association subheading"
+pass "REQ-018: dedicated author-association subheading present"
+
+# Exclusion of CONTRIBUTOR must be stated explicitly so adopters understand
+# the trade-off (external contributors cannot retrigger even on merged work).
+codex_section | grep -qE 'CONTRIBUTOR' \
+  || fail "REQ-018: author-association prose must explicitly call out that CONTRIBUTOR is excluded"
+pass "REQ-018: author-association prose calls out CONTRIBUTOR exclusion"
+
 echo
 echo "ALL CODEX-WORKFLOW CHECKS PASSED (Batch 0 + Batch 1 + Batch 2 + Batch 3)"
