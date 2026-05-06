@@ -63,3 +63,53 @@ that an external caller could not absorb without code edits.
 Environment variables, feature flags, IaC drift, missing migrations, secret
 rotation gaps, and runtime defaults. Flag any new operational surface that
 lacks documentation or rollout guidance.
+
+# Output format
+
+Reply with exactly the four sections below, in this order, using these
+literal headings. Do not invent extra sections.
+
+## Verdict
+
+One of exactly: `Approve`, `Request changes`, or `Comment`.
+
+- Use **Approve** when the change is correct and ready to merge as-is, or
+  with only Minor/Nit findings.
+- Use **Request changes** when at least one Blocker or Major finding must be
+  addressed before merge.
+- Use **Comment** when you have observations but no clear merge recommendation
+  (for example, the diff is too large to review confidently — say so and ask
+  for it to be split).
+
+## Summary
+
+Two to four sentences naming what the PR does and the headline concern, if
+any. No flattery, no hedging, no preamble like "Here is my review".
+
+## Findings
+
+Group findings by severity, in this order:
+
+- **Blocker** — must fix before merge (correctness bug, security hole, data
+  loss risk, broken build).
+- **Major** — should fix before merge (likely bug, missing test for a new
+  branch, regression risk, undocumented breaking change).
+- **Minor** — nice to fix (code clarity, small redundancy, narrow edge case).
+- **Nit** — optional polish (naming, formatting, comments).
+
+For each finding use this shape:
+
+```
+- **path/to/file.ext:LINE** — short title.
+  One paragraph: what is wrong, why it matters, suggested fix.
+```
+
+If a severity tier has no findings, write the heading and `_None._` underneath.
+Cite real file paths and line numbers from the diff. Prefer five strong
+findings over twenty weak ones.
+
+## Coverage
+
+One paragraph on test coverage of the change: are new behaviors covered?
+Are tests deterministic and load-bearing? Note any branches that are
+unreached by tests, even if the diff itself does not change them.

@@ -575,5 +575,50 @@ for dim in "${CODEX_REVIEW_DIMENSIONS[@]}"; do
 done
 pass "REQ-015 Scenario 2: all eight review dimensions present as headings"
 
+# --- Task 2.3: REQ-015 Scenario 3 — output format + verdict + severity ---
+# Locked vocabulary (per design + launch contract):
+#   Verdict ∈ { Approve, Request changes, Comment }
+#   Severity ∈ { Blocker, Major, Minor, Nit }
+#   Output-format markers (must each appear at least once): Verdict, Summary,
+#     Findings, Coverage.
+grep -qi 'verdict' "$PROMPT_FILE" \
+  || fail "REQ-015 Scenario 3: $PROMPT_FILE must mention 'verdict'"
+pass "REQ-015 Scenario 3: 'verdict' marker present"
+
+declare -a CODEX_VERDICT_TOKENS=(
+  "Approve"
+  "Request changes"
+  "Comment"
+)
+for v in "${CODEX_VERDICT_TOKENS[@]}"; do
+  grep -qF "$v" "$PROMPT_FILE" \
+    || fail "REQ-015 Scenario 3: $PROMPT_FILE must contain verdict token '$v'"
+done
+pass "REQ-015 Scenario 3: all three verdict tokens present (Approve / Request changes / Comment)"
+
+declare -a CODEX_SEVERITY_TOKENS=(
+  "Blocker"
+  "Major"
+  "Minor"
+  "Nit"
+)
+for s in "${CODEX_SEVERITY_TOKENS[@]}"; do
+  grep -qF "$s" "$PROMPT_FILE" \
+    || fail "REQ-015 Scenario 3: $PROMPT_FILE must contain severity token '$s'"
+done
+pass "REQ-015 Scenario 3: all four severity tokens present (Blocker/Major/Minor/Nit)"
+
+declare -a CODEX_OUTPUT_MARKERS=(
+  "Verdict"
+  "Summary"
+  "Findings"
+  "Coverage"
+)
+for m in "${CODEX_OUTPUT_MARKERS[@]}"; do
+  grep -qF "$m" "$PROMPT_FILE" \
+    || fail "REQ-015 Scenario 3: $PROMPT_FILE must contain output-format marker '$m'"
+done
+pass "REQ-015 Scenario 3: output-format markers present (Verdict/Summary/Findings/Coverage)"
+
 echo
 echo "ALL CODEX-WORKFLOW CHECKS PASSED (Batch 0 + Batch 1 + Batch 2)"
