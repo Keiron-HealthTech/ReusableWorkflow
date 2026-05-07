@@ -110,6 +110,12 @@ jobs:
     # and only when the commenter is a repo OWNER, MEMBER, or COLLABORATOR.
     # This keeps the cost surface bounded — external CONTRIBUTORs cannot
     # burn credits, even on their own merged work.
+    #
+    # `allowed_base_branches` mirrors the `branches:` filter on the
+    # pull_request trigger above. The issue_comment event is not
+    # branch-scoped at the trigger level, so the reusable workflow
+    # enforces the filter from this input. Drop it (or leave it empty)
+    # if you want maintainers to be able to retrigger on any base branch.
     if: >-
       github.event_name == 'issue_comment' &&
       github.event.issue.pull_request != null &&
@@ -118,6 +124,7 @@ jobs:
     uses: Keiron-HealthTech/ReusableWorkflow/.github/workflows/codexPrReview.yml@main
     with:
       pr_number: ${{ github.event.pull_request.number || github.event.issue.number }}
+      allowed_base_branches: "development"
     secrets:
       openai_api_key: ${{ secrets.OPENAI_API_KEY }}
 ```
@@ -152,11 +159,43 @@ events to prevent secret exfiltration. The `if:` guard
 `github.event.pull_request.head.repo.full_name == github.repository`
 short-circuits those runs cleanly so the workflow does not fail spuriously.
 
-A maintainer can still review a fork PR on demand by commenting `@codex` on
-the PR thread. The `issue_comment` event runs in the **base** repository's
-context with full secret access, so the review proceeds normally. The
-trade-off: fully automated coverage for trusted same-repo work, gated manual
-coverage for outside contributions.
+The reusable workflow also enforces this guard internally via the
+`allow_fork_prs` input (default `false`). When the resolved PR head is
+from a fork and the caller has not opted in, the workflow posts a
+one-line skip comment and exits cleanly — secrets are never passed to
+`actions/checkout` or `openai/codex-action`. This second layer matters
+for the `issue_comment` retrigger path: an `issue_comment` event runs in
+the **base** repository's context with full secret access, and the
+event payload does not carry `head.repo` metadata, so the caller-level
+`if:` filter that protects the `pull_request` path is not available
+there. To intentionally review a fork PR (manual maintainer trigger),
+pass `allow_fork_prs: true`:
+
+```yaml
+with:
+  pr_number: ${{ github.event.pull_request.number || github.event.issue.number }}
+  allow_fork_prs: true
+```
+
+#### Base-branch allowlist
+
+The reusable workflow accepts an optional `allowed_base_branches` input
+(comma-separated string, empty default = any base accepted). When
+non-empty, the review runs only if the PR's base branch is in the list.
+This is the issue_comment-path equivalent of the `branches:` filter on
+the `pull_request` trigger — `issue_comment` events fire regardless of
+base branch, and there is no native trigger-level filter for them, so
+the reusable workflow enforces the allowlist after resolving PR
+metadata via `gh pr view`.
+
+```yaml
+with:
+  pr_number: ${{ github.event.pull_request.number || github.event.issue.number }}
+  allowed_base_branches: "development,release"
+```
+
+When the guard trips, the workflow posts a one-line skip comment naming
+the offending base branch and exits cleanly — Codex is never invoked.
 
 #### Author-association retrigger gate
 

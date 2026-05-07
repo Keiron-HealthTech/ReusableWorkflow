@@ -38,6 +38,28 @@ on:
         required: false
         type: boolean
         default: true
+      # Security gate: when false (default), skip review entirely if the PR
+      # head is from a fork. Prevents the workflow from checking out untrusted
+      # fork code while OPENAI_API_KEY is in the job env. The pull_request
+      # caller path normally guards this at the caller `if:` level, but the
+      # issue_comment caller path cannot — the issue_comment payload does not
+      # carry head.repo metadata. This input is the defense-in-depth backstop
+      # that makes the issue_comment retrigger pattern safe by default.
+      allow_fork_prs:
+        description: "If false (default), skip review when the PR head is from a fork."
+        required: false
+        type: boolean
+        default: false
+      # Cost gate: optional comma-separated allowlist of base branches.
+      # When non-empty, the review only runs if the PR's base branch is in
+      # the list. Useful for the issue_comment retrigger path, which fires
+      # regardless of base branch and cannot be filtered via `on: ... branches:`.
+      # Empty default means any base branch is accepted.
+      allowed_base_branches:
+        description: "Comma-separated list of base branches to review. Empty = any."
+        required: false
+        type: string
+        default: ""
     secrets:
       openai_api_key:
         description: "OpenAI API key used by openai/codex-action@v1."
@@ -52,23 +74,39 @@ jobs:
   review:
     runs-on: ubuntu-latest
     steps:
-      # 1. Resolve PR head + base SHAs via `gh pr view`.
+      # 1. Resolve PR metadata via `gh pr view` and apply scope guards.
       #
-      # Caller passes only `pr_number`; the workflow resolves both refs from
-      # the GitHub API. NO `continue-on-error` here — fail fast on any
-      # resolution error so misconfigured callers see the problem immediately.
+      # Caller passes only `pr_number`; the workflow resolves head/base SHAs
+      # plus the metadata needed to enforce the fork-PR and base-branch
+      # guards (`isCrossRepository`, `baseRefName`).
+      #
+      # NO `continue-on-error` here — fail fast on any resolution error so
+      # misconfigured callers see the problem immediately.
+      #
+      # When a guard trips (fork PR with allow_fork_prs=false, or base branch
+      # outside allowed_base_branches), this step DOES NOT fail. It emits
+      # `should_skip=true` + a `skip_reason`, and every subsequent step is
+      # gated on `should_skip != 'true'`. This way:
+      #   - the run shows green in the Actions UI (the guard is expected
+      #     behavior, not a failure)
+      #   - secrets are never passed to checkout / Codex when skipping
+      #   - a single follow-up step posts a one-line comment explaining the skip
       - name: Resolve PR refs
         id: refs
         env:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ inputs.pr_number }}
+          ALLOW_FORK_PRS: ${{ inputs.allow_fork_prs }}
+          ALLOWED_BASE_BRANCHES: ${{ inputs.allowed_base_branches }}
         run: |
           set -euo pipefail
           pr_data=$(gh pr view "$PR_NUMBER" \
             --repo "${{ github.repository }}" \
-            --json headRefOid,baseRefOid)
+            --json headRefOid,baseRefOid,baseRefName,isCrossRepository,headRepository,headRepositoryOwner)
           head_sha=$(echo "$pr_data" | jq -r '.headRefOid')
           base_sha=$(echo "$pr_data" | jq -r '.baseRefOid')
+          base_ref_name=$(echo "$pr_data" | jq -r '.baseRefName')
+          is_cross_repo=$(echo "$pr_data" | jq -r '.isCrossRepository')
           if [ -z "$head_sha" ] || [ "$head_sha" = "null" ]; then
             echo "::error::could not resolve head SHA for PR #${PR_NUMBER}"
             exit 1
@@ -77,11 +115,78 @@ jobs:
             echo "::error::could not resolve base SHA for PR #${PR_NUMBER}"
             exit 1
           fi
+          if [ -z "$base_ref_name" ] || [ "$base_ref_name" = "null" ]; then
+            echo "::error::could not resolve base ref name for PR #${PR_NUMBER}"
+            exit 1
+          fi
           echo "head_sha=${head_sha}" >> "$GITHUB_OUTPUT"
           echo "base_sha=${base_sha}" >> "$GITHUB_OUTPUT"
+          echo "base_ref_name=${base_ref_name}" >> "$GITHUB_OUTPUT"
+
+          # Fork-PR guard. `allow_fork_prs` is a boolean input; in shell it
+          # arrives as the literal string "true" or "false".
+          if [ "$is_cross_repo" = "true" ] && [ "$ALLOW_FORK_PRS" != "true" ]; then
+            echo "::warning::PR #${PR_NUMBER} head is from a fork; skipping review (set allow_fork_prs=true to override)"
+            echo "should_skip=true" >> "$GITHUB_OUTPUT"
+            echo "skip_reason=fork-pr" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Base-branch allowlist guard. Empty input = no filter.
+          if [ -n "$ALLOWED_BASE_BRANCHES" ]; then
+            # Split on comma, trim whitespace, exact-match against base ref.
+            if ! echo "$ALLOWED_BASE_BRANCHES" \
+                | tr ',' '\n' \
+                | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' \
+                | grep -Fxq "$base_ref_name"; then
+              echo "::warning::PR #${PR_NUMBER} base branch '${base_ref_name}' not in allowed_base_branches='${ALLOWED_BASE_BRANCHES}'; skipping review"
+              echo "should_skip=true" >> "$GITHUB_OUTPUT"
+              echo "skip_reason=base-branch-mismatch" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          fi
+
+          echo "should_skip=false" >> "$GITHUB_OUTPUT"
+          echo "skip_reason=" >> "$GITHUB_OUTPUT"
+
+      # 1b. Post a one-line skip comment when a scope guard trips. Skipped
+      # silently when the caller passed `comment_on_pr: false` (dry-run).
+      #
+      # `continue-on-error: true`: a GitHub API blip on createComment MUST
+      # NOT turn the guarded skip into a red check.
+      - name: Post scope-skip comment
+        if: ${{ steps.refs.outputs.should_skip == 'true' && inputs.comment_on_pr }}
+        uses: actions/github-script@v7
+        continue-on-error: true
+        env:
+          PR_NUMBER: ${{ inputs.pr_number }}
+          SKIP_REASON: ${{ steps.refs.outputs.skip_reason }}
+          BASE_REF_NAME: ${{ steps.refs.outputs.base_ref_name }}
+          ALLOWED_BASE_BRANCHES: ${{ inputs.allowed_base_branches }}
+        with:
+          script: |
+            const prNumber = parseInt(process.env.PR_NUMBER, 10);
+            const reason = process.env.SKIP_REASON || '';
+            const baseRefName = process.env.BASE_REF_NAME || '';
+            const allowed = process.env.ALLOWED_BASE_BRANCHES || '';
+            let body;
+            if (reason === 'fork-pr') {
+              body = 'Auto-review skipped — this PR is from a fork. The reusable workflow refuses to check out untrusted fork code while secrets are in scope. A maintainer can opt-in by setting `allow_fork_prs: true` on the caller workflow.\n\n> Retrigger this review by commenting `@codex` (maintainers only).';
+            } else if (reason === 'base-branch-mismatch') {
+              body = `Auto-review skipped — this PR targets \`${baseRefName}\`, which is not in the caller's \`allowed_base_branches\` list (\`${allowed}\`).\n\n> Retrigger this review by commenting \`@codex\` (maintainers only).`;
+            } else {
+              body = `Auto-review skipped — reason: \`${reason}\`.\n\n> Retrigger this review by commenting \`@codex\` (maintainers only).`;
+            }
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: prNumber,
+              body: body,
+            });
 
       # 2. Check out the caller repo at the resolved head SHA, full history.
       - name: Checkout caller at PR head
+        if: ${{ steps.refs.outputs.should_skip != 'true' }}
         uses: actions/checkout@v4
         with:
           ref: ${{ steps.refs.outputs.head_sha }}
@@ -89,6 +194,7 @@ jobs:
 
       # 3. Pre-fetch base + head refs so Codex can diff them locally.
       - name: Pre-fetch PR refs
+        if: ${{ steps.refs.outputs.should_skip != 'true' }}
         env:
           BASE_SHA: ${{ steps.refs.outputs.base_sha }}
           HEAD_SHA: ${{ steps.refs.outputs.head_sha }}
@@ -104,6 +210,7 @@ jobs:
       # The list lives here on purpose — single point of truth, easy to extend.
       # Matches lockfiles at any directory depth (covers monorepo workspaces).
       - name: Compute review scope
+        if: ${{ steps.refs.outputs.should_skip != 'true' }}
         id: scope
         env:
           BASE_SHA: ${{ steps.refs.outputs.base_sha }}
@@ -147,7 +254,7 @@ jobs:
       # that path doesn't need the default file. Also skipped on lockfiles-
       # only diffs since there's no Codex run to feed.
       - name: Sparse checkout default prompt
-        if: ${{ steps.scope.outputs.lockfiles_only != 'true' && inputs.review_prompt == '' }}
+        if: ${{ steps.refs.outputs.should_skip != 'true' && steps.scope.outputs.lockfiles_only != 'true' && inputs.review_prompt == '' }}
         uses: actions/checkout@v4
         with:
           repository: Keiron-HealthTech/ReusableWorkflow
@@ -175,7 +282,7 @@ jobs:
       # missing, with `::error::` annotations naming the offending path so
       # operators can fix the caller config quickly.
       - name: Resolve effective prompt
-        if: ${{ steps.scope.outputs.lockfiles_only != 'true' }}
+        if: ${{ steps.refs.outputs.should_skip != 'true' && steps.scope.outputs.lockfiles_only != 'true' }}
         id: prompt
         env:
           INPUT_REVIEW_PROMPT: ${{ inputs.review_prompt }}
@@ -218,7 +325,7 @@ jobs:
       # Both inline and file-resolution paths converge here on a single
       # temp-file artifact, which the Codex step consumes via prompt-file.
       - name: Compose final prompt
-        if: ${{ steps.scope.outputs.lockfiles_only != 'true' }}
+        if: ${{ steps.refs.outputs.should_skip != 'true' && steps.scope.outputs.lockfiles_only != 'true' }}
         id: compose
         env:
           EFFECTIVE_PROMPT_INLINE: ${{ steps.prompt.outputs.effective_prompt_inline }}
@@ -251,7 +358,7 @@ jobs:
       # `continue-on-error: true`: a Codex outage or an invalid API key MUST
       # NOT fail the caller's PR check.
       - name: Run Codex
-        if: ${{ steps.scope.outputs.lockfiles_only != 'true' }}
+        if: ${{ steps.refs.outputs.should_skip != 'true' && steps.scope.outputs.lockfiles_only != 'true' }}
         id: codex
         uses: openai/codex-action@v1
         continue-on-error: true
@@ -265,7 +372,7 @@ jobs:
       # 9. Lockfiles-only short-circuit: no Codex output to post, just a
       # one-liner so the PR conversation reflects that the workflow ran.
       - name: Post lockfile-only comment
-        if: ${{ inputs.comment_on_pr && steps.scope.outputs.lockfiles_only == 'true' }}
+        if: ${{ steps.refs.outputs.should_skip != 'true' && inputs.comment_on_pr && steps.scope.outputs.lockfiles_only == 'true' }}
         uses: actions/github-script@v7
         continue-on-error: true
         env:
@@ -297,7 +404,7 @@ jobs:
       # `continue-on-error: true`: a GitHub API 5xx on createComment MUST
       # NOT fail the caller's PR check.
       - name: Post PR comment
-        if: ${{ inputs.comment_on_pr && steps.scope.outputs.lockfiles_only != 'true' }}
+        if: ${{ steps.refs.outputs.should_skip != 'true' && inputs.comment_on_pr && steps.scope.outputs.lockfiles_only != 'true' }}
         uses: actions/github-script@v7
         continue-on-error: true
         env:
