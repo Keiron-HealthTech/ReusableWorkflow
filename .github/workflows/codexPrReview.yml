@@ -1,0 +1,333 @@
+name: Codex PR Review
+
+# Reusable workflow that runs `openai/codex-action@v1` against a caller's PR
+# and posts the model's review as a single PR comment.
+#
+# Caller wiring example: see README.md "Codex PR Review" section.
+
+on:
+  workflow_call:
+    inputs:
+      # Required: which PR to review.
+      pr_number:
+        description: "Pull request number to review."
+        required: true
+        type: number
+      # Optional inline prompt override. Wins over `prompt_file` and the baked default.
+      review_prompt:
+        description: "Inline review prompt body. Wins over prompt_file + default."
+        required: false
+        type: string
+        default: ""
+      # Optional caller-side prompt path (resolved against the caller's checkout).
+      prompt_file:
+        description: "Path to prompt file inside the caller's repo."
+        required: false
+        type: string
+        default: ""
+      # Optional Codex model override (passes through to openai/codex-action@v1).
+      model:
+        description: "Codex model identifier (e.g., 'gpt-5'). Empty = action default."
+        required: false
+        type: string
+        default: ""
+      # Caller toggle: post Codex output as a PR comment (default true).
+      # Set false to dry-run the workflow without making any PR comments.
+      comment_on_pr:
+        description: "If false, skip posting the PR comment (Codex still runs)."
+        required: false
+        type: boolean
+        default: true
+    secrets:
+      openai_api_key:
+        description: "OpenAI API key used by openai/codex-action@v1."
+        required: true
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    steps:
+      # 1. Resolve PR head + base SHAs via `gh pr view`.
+      #
+      # Caller passes only `pr_number`; the workflow resolves both refs from
+      # the GitHub API. NO `continue-on-error` here — fail fast on any
+      # resolution error so misconfigured callers see the problem immediately.
+      - name: Resolve PR refs
+        id: refs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ inputs.pr_number }}
+        run: |
+          set -euo pipefail
+          pr_data=$(gh pr view "$PR_NUMBER" \
+            --repo "${{ github.repository }}" \
+            --json headRefOid,baseRefOid)
+          head_sha=$(echo "$pr_data" | jq -r '.headRefOid')
+          base_sha=$(echo "$pr_data" | jq -r '.baseRefOid')
+          if [ -z "$head_sha" ] || [ "$head_sha" = "null" ]; then
+            echo "::error::could not resolve head SHA for PR #${PR_NUMBER}"
+            exit 1
+          fi
+          if [ -z "$base_sha" ] || [ "$base_sha" = "null" ]; then
+            echo "::error::could not resolve base SHA for PR #${PR_NUMBER}"
+            exit 1
+          fi
+          echo "head_sha=${head_sha}" >> "$GITHUB_OUTPUT"
+          echo "base_sha=${base_sha}" >> "$GITHUB_OUTPUT"
+
+      # 2. Check out the caller repo at the resolved head SHA, full history.
+      - name: Checkout caller at PR head
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.refs.outputs.head_sha }}
+          fetch-depth: 0
+
+      # 3. Pre-fetch base + head refs so Codex can diff them locally.
+      - name: Pre-fetch PR refs
+        env:
+          BASE_SHA: ${{ steps.refs.outputs.base_sha }}
+          HEAD_SHA: ${{ steps.refs.outputs.head_sha }}
+        run: |
+          set -euo pipefail
+          git fetch origin "$BASE_SHA" "$HEAD_SHA"
+
+      # 4. Compute review scope: list changed files with auto-generated lockfiles
+      # filtered out at the workflow level (not just via prompt instruction) so
+      # Codex never spends tokens on them. If the entire diff is lockfiles,
+      # short-circuit before invoking Codex and post a one-line comment instead.
+      #
+      # The list lives here on purpose — single point of truth, easy to extend.
+      # Matches lockfiles at any directory depth (covers monorepo workspaces).
+      - name: Compute review scope
+        id: scope
+        env:
+          BASE_SHA: ${{ steps.refs.outputs.base_sha }}
+          HEAD_SHA: ${{ steps.refs.outputs.head_sha }}
+        run: |
+          set -euo pipefail
+          files=$(git diff --name-only "$BASE_SHA".."$HEAD_SHA" \
+            | grep -Ev '(^|/)(package-lock\.json|yarn\.lock|pnpm-lock\.yaml|bun\.lockb|npm-shrinkwrap\.json|Pipfile\.lock|poetry\.lock|uv\.lock|Cargo\.lock|composer\.lock|Gemfile\.lock|mix\.lock|Podfile\.lock|pubspec\.lock|gradle\.lockfile|go\.sum|go\.work\.sum|Gopkg\.lock|glide\.lock)$' \
+            || true)
+          if [ -z "$files" ]; then
+            echo "lockfiles_only=true" >> "$GITHUB_OUTPUT"
+            echo "review_files=" >> "$GITHUB_OUTPUT"
+            echo "lockfiles-only diff — skipping Codex"
+          else
+            echo "lockfiles_only=false" >> "$GITHUB_OUTPUT"
+            {
+              echo "review_files<<EOF_FILES"
+              printf '%s\n' "$files"
+              echo "EOF_FILES"
+            } >> "$GITHUB_OUTPUT"
+            count=$(printf '%s\n' "$files" | wc -l | tr -d ' ')
+            echo "review scope: ${count} non-lockfile file(s)"
+          fi
+
+      # 5. Sparse second-checkout of the ReusableWorkflow repo to fetch the
+      # default review prompt.
+      #
+      # IMPORTANT: in reusable workflows, the `github` context is associated
+      # with the caller workflow, so `github.workflow_sha` cannot be used to
+      # resolve this repository's workflow commit.
+      #
+      # Use a stable branch ref here so default-prompt resolution is reliable
+      # for cross-repo callers that do not pass `review_prompt` or
+      # `prompt_file`.
+      #
+      # Sparse-checkout limits the fetch to a single file, ~50ms vs full
+      # repo clone. `cone-mode: false` is required because we want a single
+      # file path, not a directory cone.
+      #
+      # Skipped when the caller passes `review_prompt` (inline override) —
+      # that path doesn't need the default file. Also skipped on lockfiles-
+      # only diffs since there's no Codex run to feed.
+      - name: Sparse checkout default prompt
+        if: ${{ steps.scope.outputs.lockfiles_only != 'true' && inputs.review_prompt == '' }}
+        uses: actions/checkout@v4
+        with:
+          repository: Keiron-HealthTech/ReusableWorkflow
+          ref: main
+          path: .codex-defaults
+          sparse-checkout: |
+            .github/codex/pr-review.prompt.md
+          sparse-checkout-cone-mode: false
+
+      # 6. Resolve the effective review prompt by precedence:
+      #
+      #   inline review_prompt   (highest)
+      #   > caller-side prompt_file
+      #   > baked default at .codex-defaults/.github/codex/pr-review.prompt.md
+      #
+      # The step emits TWO outputs — exactly one will be non-empty per run:
+      #   - effective_prompt_inline : prompt body
+      #   - effective_prompt_file   : path to prompt file
+      #
+      # The inline output uses a heredoc-safe `<<EOF_PROMPT` form so multiline
+      # prompts containing newlines, backticks, or `$` survive the trip
+      # through `$GITHUB_OUTPUT` intact.
+      #
+      # NO `continue-on-error` here — fail fast when the resolved source is
+      # missing, with `::error::` annotations naming the offending path so
+      # operators can fix the caller config quickly.
+      - name: Resolve effective prompt
+        if: ${{ steps.scope.outputs.lockfiles_only != 'true' }}
+        id: prompt
+        env:
+          INPUT_REVIEW_PROMPT: ${{ inputs.review_prompt }}
+          INPUT_PROMPT_FILE: ${{ inputs.prompt_file }}
+        run: |
+          set -euo pipefail
+          DEFAULT_PROMPT=".codex-defaults/.github/codex/pr-review.prompt.md"
+          if [ -n "$INPUT_REVIEW_PROMPT" ]; then
+            {
+              echo "effective_prompt_inline<<EOF_PROMPT"
+              printf '%s\n' "$INPUT_REVIEW_PROMPT"
+              echo "EOF_PROMPT"
+              echo "effective_prompt_file="
+            } >> "$GITHUB_OUTPUT"
+            echo "resolved prompt: inline review_prompt input"
+          elif [ -n "$INPUT_PROMPT_FILE" ]; then
+            if [ ! -f "$INPUT_PROMPT_FILE" ]; then
+              echo "::error::prompt_file '${INPUT_PROMPT_FILE}' not found in caller checkout"
+              exit 1
+            fi
+            {
+              echo "effective_prompt_inline="
+              echo "effective_prompt_file=${INPUT_PROMPT_FILE}"
+            } >> "$GITHUB_OUTPUT"
+            echo "resolved prompt: caller prompt_file=${INPUT_PROMPT_FILE}"
+          else
+            if [ ! -f "$DEFAULT_PROMPT" ]; then
+              echo "::error::default prompt '${DEFAULT_PROMPT}' missing — sparse checkout failed or file deleted at workflow ref"
+              exit 1
+            fi
+            {
+              echo "effective_prompt_inline="
+              echo "effective_prompt_file=${DEFAULT_PROMPT}"
+            } >> "$GITHUB_OUTPUT"
+            echo "resolved prompt: ${DEFAULT_PROMPT} (baked default)"
+          fi
+
+      # 7. Compose the final prompt: prepend the filtered file list as a
+      # scope header so Codex confines its review to non-lockfile files.
+      # Both inline and file-resolution paths converge here on a single
+      # temp-file artifact, which the Codex step consumes via prompt-file.
+      - name: Compose final prompt
+        if: ${{ steps.scope.outputs.lockfiles_only != 'true' }}
+        id: compose
+        env:
+          EFFECTIVE_PROMPT_INLINE: ${{ steps.prompt.outputs.effective_prompt_inline }}
+          EFFECTIVE_PROMPT_FILE: ${{ steps.prompt.outputs.effective_prompt_file }}
+          REVIEW_FILES: ${{ steps.scope.outputs.review_files }}
+        run: |
+          set -euo pipefail
+          OUT="${RUNNER_TEMP:-/tmp}/codex-prompt.md"
+          {
+            echo "# Files to review (lockfiles pre-filtered by the workflow)"
+            echo ""
+            echo "Restrict the review to the files listed below. Auto-generated"
+            echo "lockfiles have already been excluded — do not look at or"
+            echo "comment on any file outside this list."
+            echo ""
+            printf '%s\n' "$REVIEW_FILES" | sed 's/^/- /'
+            echo ""
+            echo "---"
+            echo ""
+            if [ -n "$EFFECTIVE_PROMPT_INLINE" ]; then
+              printf '%s\n' "$EFFECTIVE_PROMPT_INLINE"
+            else
+              cat "$EFFECTIVE_PROMPT_FILE"
+            fi
+          } > "$OUT"
+          echo "final_prompt_path=$OUT" >> "$GITHUB_OUTPUT"
+
+      # 8. Run Codex with the composed prompt.
+      #
+      # `continue-on-error: true`: a Codex outage or an invalid API key MUST
+      # NOT fail the caller's PR check.
+      - name: Run Codex
+        if: ${{ steps.scope.outputs.lockfiles_only != 'true' }}
+        id: codex
+        uses: openai/codex-action@v1
+        continue-on-error: true
+        with:
+          openai-api-key: ${{ secrets.openai_api_key }}
+          prompt-file: ${{ steps.compose.outputs.final_prompt_path }}
+          model: ${{ inputs.model }}
+          sandbox: read-only
+          safety-strategy: drop-sudo
+
+      # 9. Lockfiles-only short-circuit: no Codex output to post, just a
+      # one-liner so the PR conversation reflects that the workflow ran.
+      - name: Post lockfile-only comment
+        if: ${{ inputs.comment_on_pr && steps.scope.outputs.lockfiles_only == 'true' }}
+        uses: actions/github-script@v7
+        continue-on-error: true
+        env:
+          PR_NUMBER: ${{ inputs.pr_number }}
+        with:
+          script: |
+            const prNumber = parseInt(process.env.PR_NUMBER, 10);
+            const body = 'Auto-review skipped — this diff only changes lockfiles.\n\n> Retrigger this review by commenting `@codex` (maintainers only).';
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: prNumber,
+              body: body,
+            });
+
+      # 10. Post the Codex final-message as a PR comment.
+      #
+      # Hardening: CODEX_FINAL_MESSAGE is passed via env, NEVER interpolated
+      # into the JS body via `${{ }}`. This neutralizes any code-injection
+      # risk if model output ever contains JS string-terminating characters.
+      #
+      # Footer: every comment ends with a Markdown blockquote line telling
+      # the reader how to re-trigger the review. Appended LAST so it
+      # survives the truncation step.
+      #
+      # Gate: skipped entirely when caller passes `comment_on_pr: false`
+      # (useful for dry-runs / smoke tests).
+      #
+      # `continue-on-error: true`: a GitHub API 5xx on createComment MUST
+      # NOT fail the caller's PR check.
+      - name: Post PR comment
+        if: ${{ inputs.comment_on_pr && steps.scope.outputs.lockfiles_only != 'true' }}
+        uses: actions/github-script@v7
+        continue-on-error: true
+        env:
+          CODEX_FINAL_MESSAGE: ${{ steps.codex.outputs.final-message }}
+          PR_NUMBER: ${{ inputs.pr_number }}
+        with:
+          script: |
+            // GitHub caps issue comment bodies at 65,536 chars; we leave a
+            // 5,536-char safety margin so the footer + truncation notice +
+            // any future API additions stay below the hard limit.
+            const MAX_BODY = 60000;
+            const FOOTER = '> Retrigger this review by commenting `@codex` (maintainers only).';
+            const TRUNC_NOTICE = '\n\n_[truncated — see workflow run for full output]_';
+
+            const codexOutput = process.env.CODEX_FINAL_MESSAGE || '';
+            const prNumber = parseInt(process.env.PR_NUMBER, 10);
+            let reviewBody = codexOutput.trim().length > 0
+              ? codexOutput
+              : '_Codex returned no output for this run._';
+
+            // Truncate BEFORE appending the footer so the footer is always
+            // the last line of the comment.
+            if (reviewBody.length > MAX_BODY) {
+              reviewBody = reviewBody.slice(0, MAX_BODY) + TRUNC_NOTICE;
+            }
+
+            const body = `${reviewBody}\n\n${FOOTER}`;
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: prNumber,
+              body: body,
+            });
