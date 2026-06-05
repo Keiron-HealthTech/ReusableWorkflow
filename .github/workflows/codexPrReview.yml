@@ -27,10 +27,10 @@ on:
         default: ""
       # Optional Codex model override (passes through to openai/codex-action@v1).
       model:
-        description: "Codex model identifier (e.g., 'gpt-5'). Defaults to 'gpt-5.2-codex'."
+        description: "Codex model identifier (e.g., 'gpt-5'). Defaults to 'gpt-5.3-codex-spark'."
         required: false
         type: string
-        default: "gpt-5.2-codex"
+        default: "gpt-5.3-codex-spark"
       # Caller toggle: post Codex output as a PR comment (default true).
       # Set false to dry-run the workflow without making any PR comments.
       comment_on_pr:
