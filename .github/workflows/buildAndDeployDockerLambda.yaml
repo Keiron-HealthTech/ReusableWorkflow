@@ -29,16 +29,45 @@ on:
         required: false
         type: boolean
         default: false
+      environment:
+        description: "Entorno (production | staging) para autenticar por OIDC con el AppDeployRole; si se omite se usan las credenciales estáticas de la org"
+        required: false
+        type: string
+        default: ""
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
 
     steps:
+      - name: Validate environment input
+        if: inputs.environment != ''
+        env:
+          ENVIRONMENT: ${{ inputs.environment }}
+        run: |
+          set -euo pipefail
+          case "$ENVIRONMENT" in
+            production|staging) ;;
+            *)
+              echo "::error::environment debe ser 'production' o 'staging', se recibió '$ENVIRONMENT'."
+              exit 1
+              ;;
+          esac
+
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Configure AWS credentials
+      - name: Configure AWS credentials (OIDC)
+        if: inputs.environment != ''
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::872535834453:role/infra_${{ inputs.environment }}_github-actions_app-deploy
+          aws-region: ${{ inputs.aws_region }}
+
+      # Legacy: credenciales estáticas de la org (user github-serviceaccount).
+      # Solo mientras los repos migran a OIDC; una vez migrados todos, eliminar.
+      - name: Configure AWS credentials (static keys)
+        if: inputs.environment == ''
         uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id: ${{ secrets.aws_access_key_id }}
