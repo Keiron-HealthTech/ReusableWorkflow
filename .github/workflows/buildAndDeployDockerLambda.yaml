@@ -97,9 +97,10 @@ jobs:
           echo "image=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
 
       - name: Deploy Lambda function
-        uses: aws-actions/aws-lambda-deploy@v1.1.0
-        with:
-          function-name: ${{ inputs.lambda_function_name }}
-          package-type: Image
-          image-uri: ${{ steps.build-image.outputs.image }}
-          publish: ${{ inputs.publish_version }}
+        env:
+          FUNCTION_NAME: ${{ inputs.lambda_function_name }}
+          IMAGE_URI: ${{ steps.build-image.outputs.image }}
+          PUBLISH_FLAG: ${{ inputs.publish_version && '--publish' || '--no-publish' }}
+        run: |
+          aws lambda update-function-code --function-name "$FUNCTION_NAME" --image-uri "$IMAGE_URI" "$PUBLISH_FLAG"
+          aws lambda wait function-updated --function-name "$FUNCTION_NAME"
