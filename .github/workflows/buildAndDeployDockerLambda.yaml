@@ -12,11 +12,11 @@ on:
         required: true
         type: string
       ecr_repository:
-        description: "ECR repository name (e.g., platform/document-interpreter/ai-parser)"
+        description: "ECR repository name (e.g., platform_production_document-interpreter_ai-parser)"
         required: true
         type: string
       lambda_function_name:
-        description: "Lambda function name to update (e.g., platform-staging-ai-parser)"
+        description: "Lambda function name to update (e.g., platform_production_document-interpreter_ai-parser)"
         required: true
         type: string
       aws_region:
