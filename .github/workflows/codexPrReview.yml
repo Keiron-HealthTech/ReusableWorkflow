@@ -217,7 +217,11 @@ jobs:
           HEAD_SHA: ${{ steps.refs.outputs.head_sha }}
         run: |
           set -euo pipefail
-          files=$(git diff --name-only "$BASE_SHA".."$HEAD_SHA" \
+          # Three dots: diff from the merge base, not from the base branch tip.
+          # `baseRefOid` is the tip as of now, so with two dots anything merged
+          # into the base after this PR branched shows up inverted — as a
+          # deletion the PR never made.
+          files=$(git diff --name-only "$BASE_SHA"..."$HEAD_SHA" \
             | grep -Ev '(^|/)(package-lock\.json|yarn\.lock|pnpm-lock\.yaml|bun\.lockb|npm-shrinkwrap\.json|Pipfile\.lock|poetry\.lock|uv\.lock|Cargo\.lock|composer\.lock|Gemfile\.lock|mix\.lock|Podfile\.lock|pubspec\.lock|gradle\.lockfile|go\.sum|go\.work\.sum|Gopkg\.lock|glide\.lock)$' \
             || true)
           if [ -z "$files" ]; then
