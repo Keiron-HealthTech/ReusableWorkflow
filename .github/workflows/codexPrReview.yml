@@ -335,10 +335,21 @@ jobs:
           EFFECTIVE_PROMPT_INLINE: ${{ steps.prompt.outputs.effective_prompt_inline }}
           EFFECTIVE_PROMPT_FILE: ${{ steps.prompt.outputs.effective_prompt_file }}
           REVIEW_FILES: ${{ steps.scope.outputs.review_files }}
+          BASE_SHA: ${{ steps.refs.outputs.base_sha }}
+          HEAD_SHA: ${{ steps.refs.outputs.head_sha }}
         run: |
           set -euo pipefail
           OUT="${RUNNER_TEMP:-/tmp}/codex-prompt.md"
           {
+            echo "# Diff under review"
+            echo ""
+            echo "The repository is checked out at the head SHA with full history."
+            echo "Review exactly this range:"
+            echo ""
+            echo "    git diff ${BASE_SHA}...${HEAD_SHA}"
+            echo ""
+            echo "It is the same range the file list below was computed from."
+            echo ""
             echo "# Files to review (lockfiles pre-filtered by the workflow)"
             echo ""
             echo "Restrict the review to the files listed below. Auto-generated"
