@@ -216,12 +216,34 @@ jobs:
         continue-on-error: true
 
       - name: Commit conflicts if cherry pick fails
+        id: conflict_commit
         if: ${{ steps.cherry_pick.outcome == 'failure' }}
+        env:
+          SHA: ${{ steps.last_commit.outputs.sha }}
         run: |
+          set -euo pipefail
+
+          if ! git rev-parse --verify --quiet CHERRY_PICK_HEAD >/dev/null; then
+            echo "::error::The cherry-pick of ${SHA} failed before it started, so there is nothing to resolve. See the previous step."
+            exit 1
+          fi
+
+          # A cherry-pick also exits non-zero when the change is already present ("the previous
+          # cherry-pick is now empty"), which leaves no unmerged paths behind. `git commit` would
+          # then abort with "nothing to commit" and fail a step named after conflicts. There is
+          # simply nothing to port, which is not an error: skip the pick and wind the job down.
+          if [ -z "$(git ls-files --unmerged)" ]; then
+            echo "::warning::${SHA} is already present on this branch; nothing to port."
+            git cherry-pick --skip
+            echo "nothing_to_port=true" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
           git add .
           git commit --no-edit
 
       - name: Push branch
+        if: steps.conflict_commit.outputs.nothing_to_port != 'true'
         env:
           # Passed via env instead of interpolated into the script: the branch name comes from the
           # PR and the parent number from a comment, so both are attacker-controllable inputs.
@@ -238,7 +260,10 @@ jobs:
           fi
 
       - name: Comment on the reused prod PR
-        if: steps.parent_pr_number.outcome == 'failure' && steps.prod_branch.outputs.create_pr == 'false'
+        if: >-
+          steps.parent_pr_number.outcome == 'failure'
+          && steps.prod_branch.outputs.create_pr == 'false'
+          && steps.conflict_commit.outputs.nothing_to_port != 'true'
         env:
           REUSED_PR: ${{ steps.prod_branch.outputs.reused_pr }}
           PR_NUMBER: ${{ inputs.development_pr_number }}
@@ -259,7 +284,10 @@ jobs:
           gh pr comment "$REUSED_PR" --body-file /tmp/reuse_comment.md
 
       - name: Create pull request
-        if: steps.parent_pr_number.outcome == 'failure' && steps.prod_branch.outputs.create_pr == 'true'
+        if: >-
+          steps.parent_pr_number.outcome == 'failure'
+          && steps.prod_branch.outputs.create_pr == 'true'
+          && steps.conflict_commit.outputs.nothing_to_port != 'true'
         env:
           PR_TITLE: ${{ steps.pr_details.outputs.title }}
           PR_BODY: ${{ steps.pr_details.outputs.body }}
