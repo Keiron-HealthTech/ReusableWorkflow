@@ -142,10 +142,50 @@ jobs:
           git config user.email "$(git log -n 1 --pretty=format:%ae)"
 
       - name: Checkout from ${{ inputs.target_branch }} branch
+        id: prod_branch
         if: steps.parent_pr_number.outcome == 'failure'
+        env:
+          PROD_BRANCH: ${{ steps.branch_prefix.outputs.prefix }}-prod
+          TARGET_BRANCH: ${{ inputs.target_branch }}
         run: |
-          git fetch origin ${{ inputs.target_branch }}
-          git checkout -b ${{ steps.branch_prefix.outputs.prefix }}-prod origin/${{ inputs.target_branch }}
+          set -euo pipefail
+
+          git fetch --no-tags origin "$TARGET_BRANCH"
+
+          # Common case: the prod branch does not exist yet.
+          if ! git ls-remote --exit-code --heads origin "$PROD_BRANCH" >/dev/null 2>&1; then
+            git checkout -b "$PROD_BRANCH" "origin/$TARGET_BRANCH"
+            echo "create_pr=true" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          # The branch already exists. Recreating it from the target (the previous behaviour)
+          # leaves the local branch with no ancestry to the remote one, so the push is rejected
+          # as non-fast-forward. Development branches often share a prefix, so this is frequent.
+          git fetch --no-tags origin "$PROD_BRANCH"
+          open_pr=$(gh pr list --head "$PROD_BRANCH" --base "$TARGET_BRANCH" --state open --json number --jq '.[0].number // ""')
+
+          if [ -n "$open_pr" ]; then
+            # Live branch: exactly the grouping the <prefix>-prod scheme is meant to support.
+            echo "Branch $PROD_BRANCH has open PR #${open_pr}; stacking the commit on top of it."
+            git checkout -B "$PROD_BRANCH" "origin/$PROD_BRANCH"
+            echo "create_pr=false" >> $GITHUB_OUTPUT
+            echo "reused_pr=$open_pr" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          if git merge-base --is-ancestor "origin/$PROD_BRANCH" "origin/$TARGET_BRANCH"; then
+            # No open PR, but already contained in the target: it carries no foreign commits.
+            echo "Branch $PROD_BRANCH has no open PR and is already contained in $TARGET_BRANCH; reusing it."
+            git checkout -B "$PROD_BRANCH" "origin/$PROD_BRANCH"
+            echo "create_pr=true" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          # Orphan branch carrying its own commits (PR closed without merging). Stacking on top
+          # would drag those abandoned commits into a PR to production, so stop here.
+          echo "::error::Branch '$PROD_BRANCH' exists on origin, has no open PR against '$TARGET_BRANCH', and carries commits that are not in '$TARGET_BRANCH' (its PR was closed without merging). Stacking on top would drag those commits into production. Delete the branch if it is orphaned, or comment '/parent #<number>' on the development PR to chain onto it explicitly."
+          exit 1
 
       - name: Checkout from parent PR branch
         if: steps.parent_pr_number.outcome != 'failure'
@@ -156,8 +196,10 @@ jobs:
 
       - name: Cherry-pick the last commit from ${{ inputs.reference_branch }}
         id: cherry_pick
+        env:
+          SHA: ${{ steps.last_commit.outputs.sha }}
         run: |
-          git cherry-pick -m 1 ${{ steps.last_commit.outputs.sha }}
+          git cherry-pick -m 1 "$SHA"
         continue-on-error: true
 
       - name: Commit conflicts if cherry pick fails
@@ -167,16 +209,44 @@ jobs:
           git commit --no-edit
 
       - name: Push branch
+        env:
+          # Passed via env instead of interpolated into the script: the branch name comes from the
+          # PR and the parent number from a comment, so both are attacker-controllable inputs.
+          NO_PARENT: ${{ steps.parent_pr_number.outcome == 'failure' }}
+          PROD_BRANCH: ${{ steps.branch_prefix.outputs.prefix }}-prod
+          PARENT_PR: ${{ steps.parent_pr_number.outputs.parent_pr }}
         run: |
-          if [ "${{ steps.parent_pr_number.outcome }}" == "failure" ]; then
-            git push origin ${{ steps.branch_prefix.outputs.prefix }}-prod
+          set -euo pipefail
+          if [ "$NO_PARENT" == "true" ]; then
+            git push origin "$PROD_BRANCH"
           else
-            parent_branch=$(gh pr view ${{ steps.parent_pr_number.outputs.parent_pr }} --json headRefName --jq '.headRefName')
-            git push origin HEAD:$parent_branch
+            parent_branch=$(gh pr view "$PARENT_PR" --json headRefName --jq '.headRefName')
+            git push origin "HEAD:$parent_branch"
           fi
 
+      - name: Comment on the reused prod PR
+        if: steps.parent_pr_number.outcome == 'failure' && steps.prod_branch.outputs.create_pr == 'false'
+        env:
+          REUSED_PR: ${{ steps.prod_branch.outputs.reused_pr }}
+          PR_NUMBER: ${{ inputs.development_pr_number }}
+          PR_CREATOR: ${{ inputs.development_pr_creator }}
+          PR_TITLE: ${{ steps.pr_details.outputs.title }}
+          CHERRY_PICK_FAILED: ${{ steps.cherry_pick.outcome == 'failure' }}
+        run: |
+          set -euo pipefail
+          {
+            echo "Added to this branch: the change from #${PR_NUMBER} by @${PR_CREATOR} — ${PR_TITLE}"
+            echo ""
+            echo "It was stacked here instead of opening a new PR because it shares the branch prefix."
+            if [ "$CHERRY_PICK_FAILED" == "true" ]; then
+              echo ""
+              echo ":warning: **The cherry-pick hit conflicts and was committed as-is. Review the result before merging.**"
+            fi
+          } > /tmp/reuse_comment.md
+          gh pr comment "$REUSED_PR" --body-file /tmp/reuse_comment.md
+
       - name: Create pull request
-        if: steps.parent_pr_number.outcome == 'failure'
+        if: steps.parent_pr_number.outcome == 'failure' && steps.prod_branch.outputs.create_pr == 'true'
         env:
           PR_TITLE: ${{ steps.pr_details.outputs.title }}
           PR_BODY: ${{ steps.pr_details.outputs.body }}
