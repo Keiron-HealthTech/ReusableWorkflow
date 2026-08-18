@@ -54,6 +54,13 @@ jobs:
           set -euo pipefail
 
           if [ -n "$MERGE_COMMIT_SHA" ]; then
+            # Validated before it reaches git: a value starting with "-" would be read as an
+            # option by the fetch below. Callers are trusted today, but this is a reusable
+            # workflow and the input is whatever each of them wires into it.
+            if [[ ! "$MERGE_COMMIT_SHA" =~ ^[0-9a-f]{7,40}$ ]]; then
+              echo "::error::merge_commit_sha is not a hexadecimal commit SHA: '${MERGE_COMMIT_SHA}'"
+              exit 1
+            fi
             sha="$MERGE_COMMIT_SHA"
             # fetch-depth: 0 should already cover it, but a very recent merge may not be in the
             # clone yet, so fetch it explicitly.
