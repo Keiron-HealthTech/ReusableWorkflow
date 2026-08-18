@@ -159,8 +159,11 @@ jobs:
 
           git fetch --no-tags origin "$TARGET_BRANCH"
 
-          # Common case: the prod branch does not exist yet.
-          if ! git ls-remote --exit-code --heads origin "$PROD_BRANCH" >/dev/null 2>&1; then
+          # Common case: the prod branch does not exist yet. Matched as a full ref on purpose:
+          # a bare name is a pattern that also matches refs/heads/<anything>/<name>, which would
+          # send a brand-new branch down the "already exists" path and then fail the fetch below
+          # with "couldn't find remote ref".
+          if ! git ls-remote --exit-code --heads origin "refs/heads/$PROD_BRANCH" >/dev/null 2>&1; then
             git checkout -b "$PROD_BRANCH" "origin/$TARGET_BRANCH"
             echo "create_pr=true" >> $GITHUB_OUTPUT
             exit 0
