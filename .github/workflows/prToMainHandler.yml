@@ -18,6 +18,14 @@ on:
         type: string
         default: "main"
         description: "The target branch for the PR (e.g., main or master)"
+      merge_commit_sha:
+        required: false
+        type: string
+        default: ""
+        description: >-
+          Merge commit of the development PR (github.event.pull_request.merge_commit_sha).
+          When empty, falls back to the tip of reference_branch, which is only correct if no
+          other PR merged in between. Callers should always pass it.
     secrets:
       personal_access_token:
         required: true
@@ -39,7 +47,26 @@ jobs:
 
       - name: Get the last commit SHA
         id: last_commit
-        run: echo "sha=$(git rev-parse HEAD)" >> $GITHUB_OUTPUT
+        env:
+          MERGE_COMMIT_SHA: ${{ inputs.merge_commit_sha }}
+          REF_BRANCH: ${{ inputs.reference_branch }}
+        run: |
+          set -euo pipefail
+
+          if [ -n "$MERGE_COMMIT_SHA" ]; then
+            sha="$MERGE_COMMIT_SHA"
+            # fetch-depth: 0 should already cover it, but a very recent merge may not be in the
+            # clone yet, so fetch it explicitly.
+            git cat-file -e "${sha}^{commit}" 2>/dev/null || git fetch --no-tags origin "$sha"
+          else
+            # Back-compat for callers that do not pass merge_commit_sha yet. Only correct when no
+            # other PR merged between this PR's merge and the start of this run.
+            sha=$(git rev-parse HEAD)
+            echo "::warning::merge_commit_sha was not provided; falling back to the tip of ${REF_BRANCH} (${sha}), which may belong to a different PR."
+          fi
+
+          echo "Commit to port: $(git log -1 --format='%h %s' "$sha")"
+          echo "sha=$sha" >> $GITHUB_OUTPUT
 
       - name: Extract branch prefix from PR
         id: branch_prefix
