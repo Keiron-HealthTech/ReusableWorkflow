@@ -32,7 +32,7 @@ jobs:
     environment: ${{ inputs.environment || null }}
     steps:
       - name: Install kubectl (self-hosted only)
-        if: contains(inputs.runner, 'self-hosted')
+        if: contains(inputs.runner, 'self-hosted') || contains(inputs.runner, 'k8s-runner-prod') || contains(inputs.runner, 'k8s-runner-dev')
         run: |
           VERSION=$(curl --silent https://storage.googleapis.com/kubernetes-release/release/stable.txt)
           # https://github.com/aws/aws-cli/issues/6920#issuecomment-1117981158
