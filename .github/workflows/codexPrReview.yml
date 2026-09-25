@@ -185,11 +185,11 @@ jobs:
             const allowed = process.env.ALLOWED_BASE_BRANCHES || '';
             let body;
             if (reason === 'fork-pr') {
-              body = 'Auto-review skipped — this PR is from a fork. The reusable workflow refuses to check out untrusted fork code while secrets are in scope. A maintainer can opt-in by setting `allow_fork_prs: true` on the caller workflow.\n\n> Retrigger this review by commenting `/codex-review` (maintainers only).';
+              body = 'Auto-review skipped — this PR is from a fork. The reusable workflow refuses to check out untrusted fork code while secrets are in scope. A maintainer can opt-in by setting `allow_fork_prs: true` on the caller workflow.';
             } else if (reason === 'base-branch-mismatch') {
-              body = `Auto-review skipped — this PR targets \`${baseRefName}\`, which is not in the caller's \`allowed_base_branches\` list (\`${allowed}\`).\n\n> Retrigger this review by commenting \`/codex-review\` (maintainers only).`;
+              body = `Auto-review skipped — this PR targets \`${baseRefName}\`, which is not in the caller's \`allowed_base_branches\` list (\`${allowed}\`).`;
             } else {
-              body = `Auto-review skipped — reason: \`${reason}\`.\n\n> Retrigger this review by commenting \`/codex-review\` (maintainers only).`;
+              body = `Auto-review skipped — reason: \`${reason}\`.`;
             }
             await github.rest.issues.createComment({
               owner: context.repo.owner,
@@ -440,7 +440,7 @@ jobs:
         with:
           script: |
             const prNumber = parseInt(process.env.PR_NUMBER, 10);
-            const body = 'Auto-review skipped — this diff only changes lockfiles.\n\n> Retrigger this review by commenting `/codex-review` (maintainers only).';
+            const body = 'Auto-review skipped — this diff only changes lockfiles.';
             await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
@@ -453,10 +453,6 @@ jobs:
       # Hardening: CODEX_FINAL_MESSAGE is passed via env, NEVER interpolated
       # into the JS body via `${{ }}`. This neutralizes any code-injection
       # risk if model output ever contains JS string-terminating characters.
-      #
-      # Footer: every comment ends with a Markdown blockquote line telling
-      # the reader how to re-trigger the review. Appended LAST so it
-      # survives the truncation step.
       #
       # Gate: skipped entirely when caller passes `comment_on_pr: false`
       # (useful for dry-runs / smoke tests).
@@ -482,12 +478,11 @@ jobs:
         with:
           script: |
             // GitHub caps issue comment bodies at 65,536 chars; we leave a
-            // 5,536-char safety margin so the footer + truncation notice +
+            // 5,536-char safety margin so the marker + truncation notice +
             // any future API additions stay below the hard limit.
             const MAX_BODY = 60000;
             const MARKER_PREFIX = '<!-- codex-review sha=';
             const MARKER = `${MARKER_PREFIX}${process.env.HEAD_SHA} -->`;
-            const FOOTER = '> Retrigger this review by commenting `/codex-review` (maintainers only).';
             const TRUNC_NOTICE = '\n\n_[truncated — see workflow run for full output]_';
 
             const codexOutput = (process.env.CODEX_FINAL_MESSAGE || '').trim();
@@ -502,8 +497,6 @@ jobs:
               return;
             }
 
-            // Truncate BEFORE appending the footer so the footer is always
-            // the last line of the comment.
             let reviewBody = codexOutput.slice(idx);
             if (reviewBody.length > MAX_BODY) {
               reviewBody = reviewBody.slice(0, MAX_BODY) + TRUNC_NOTICE;
@@ -516,7 +509,7 @@ jobs:
               per_page: 100,
             })).filter(c => c.user?.login === 'github-actions[bot]' && (c.body || '').includes(MARKER_PREFIX));
 
-            const body = `${MARKER}\n${reviewBody}\n\n${FOOTER}`;
+            const body = `${MARKER}\n${reviewBody}`;
             await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
