@@ -422,8 +422,9 @@ jobs:
           openai-api-key: ${{ secrets.openai_api_key }}
           prompt-file: ${{ steps.compose.outputs.final_prompt_path }}
           model: ${{ inputs.model }}
-          # Codex only auto-loads AGENTS.md; crm-backend keeps its conventions
-          # in CLAUDE.md. Without this, reviews ignore repo rules.
+          # CLAUDE.md is a fallback: Codex takes the first match per directory,
+          # AGENTS.md first, so CLAUDE.md loads only where no AGENTS.md exists.
+          # crm-backend keeps its conventions in CLAUDE.md.
           codex-args: '["-c", "project_doc_fallback_filenames=[\"CLAUDE.md\"]"]'
           sandbox: read-only
           safety-strategy: drop-sudo
@@ -465,7 +466,7 @@ jobs:
       #
       # Failed runs (no output, or Codex could not read the repo) are NOT
       # posted — they only add noise. Older Codex reviews are collapsed as
-      # "outdated" so the PR shows one current review.
+      # "outdated" after the new one is posted, so the PR shows one current review.
       #
       # `continue-on-error: true`: a GitHub API 5xx on createComment MUST
       # NOT fail the caller's PR check.
@@ -491,10 +492,11 @@ jobs:
 
             const codexOutput = (process.env.CODEX_FINAL_MESSAGE || '').trim();
             const prNumber = parseInt(process.env.PR_NUMBER, 10);
-            // The default prompt fixes the first line; custom prompts own their format.
-            const usable = process.env.DEFAULT_PROMPT === 'true'
-              ? codexOutput.startsWith('### Codex review:')
-              : codexOutput !== '' && codexOutput !== 'CODEX_REVIEW_FAILED';
+            // The default prompt fixes the header; any preamble before it is dropped.
+            // Custom prompts own their format.
+            const isDefault = process.env.DEFAULT_PROMPT === 'true';
+            const idx = isDefault ? codexOutput.indexOf('### Codex review:') : 0;
+            const usable = isDefault ? idx !== -1 : codexOutput !== '' && codexOutput !== 'CODEX_REVIEW_FAILED';
             if (!usable) {
               core.warning(`Codex produced no usable review; not posting. Output head: ${codexOutput.slice(0, 200)}`);
               return;
@@ -502,7 +504,7 @@ jobs:
 
             // Truncate BEFORE appending the footer so the footer is always
             // the last line of the comment.
-            let reviewBody = codexOutput;
+            let reviewBody = codexOutput.slice(idx);
             if (reviewBody.length > MAX_BODY) {
               reviewBody = reviewBody.slice(0, MAX_BODY) + TRUNC_NOTICE;
             }
@@ -512,7 +514,17 @@ jobs:
               repo: context.repo.repo,
               issue_number: prNumber,
               per_page: 100,
-            })).filter(c => (c.body || '').includes(MARKER_PREFIX));
+            })).filter(c => c.user?.login === 'github-actions[bot]' && (c.body || '').includes(MARKER_PREFIX));
+
+            const body = `${MARKER}\n${reviewBody}\n\n${FOOTER}`;
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: prNumber,
+              body: body,
+            });
+
+            // Collapse older reviews only after the new one is posted.
             for (const c of previous) {
               try {
                 await github.graphql(
@@ -523,11 +535,3 @@ jobs:
                 core.warning(`could not collapse comment ${c.id}: ${e.message}`);
               }
             }
-
-            const body = `${MARKER}\n${reviewBody}\n\n${FOOTER}`;
-            await github.rest.issues.createComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: prNumber,
-              body: body,
-            });

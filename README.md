@@ -219,13 +219,14 @@ and a caller gate matching `codex` in commenter logins then reads it as
 - The prompt includes the PR title and description, the previous Codex
   review, and the last 15 human comments. Codex uses them to avoid
   re-raising findings a human already dismissed.
-- Before posting, older Codex reviews are collapsed as "outdated", so the PR
+- After posting, older Codex reviews are collapsed as "outdated", so the PR
   shows one current review.
 - Runs that produce no usable review (empty output, or Codex could not read
   the repo) post nothing. See the workflow run log.
-- The Codex step passes `project_doc_fallback_filenames=["CLAUDE.md"]`, so
-  repos that keep their conventions in `CLAUDE.md` instead of `AGENTS.md`
-  still get them loaded.
+- The Codex step passes `project_doc_fallback_filenames=["CLAUDE.md"]`. Codex
+  resolves this per directory and takes the first match, `AGENTS.md` first:
+  `CLAUDE.md` is loaded only in directories with no `AGENTS.md`. If both
+  exist (or an `AGENTS.md` is added later), `CLAUDE.md` is silently ignored there.
 
 #### Customizing the prompt
 
