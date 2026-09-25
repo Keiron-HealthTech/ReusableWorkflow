@@ -64,10 +64,9 @@ Reusable workflow that runs an automated [OpenAI Codex](https://openai.com/index
 review on a pull request and posts the verdict as a single PR comment. It is
 designed for dual-trigger adoption: the same workflow runs automatically when
 a PR is opened or updated, and can be re-triggered on demand by maintainers
-commenting `@codex` on the PR thread. The review uses a default
-"good standards" prompt (correctness, security, error handling, tests,
-readability, performance, API compatibility, configuration), which any caller
-can override inline or via a file checked into the caller repo.
+commenting `/codex-review` on the PR thread. The review uses a default
+verified-findings-only prompt, which any caller can override inline or via a
+file checked into the caller repo.
 
 OpenAI Codex is the only supported backend. Azure-OpenAI passthrough is
 intentionally out of scope.
@@ -78,7 +77,7 @@ Drop the following file into the caller repo at
 `.github/workflows/codex-review.yml`. It wires up both triggers in one place:
 the `pull_request` job runs on every push that opens or updates a same-repo
 PR, and the `issue_comment` job lets a maintainer re-trigger the review by
-typing `@codex` on the PR thread.
+typing `/codex-review` on the PR thread.
 
 ```yaml
 name: Codex PR Review
@@ -93,7 +92,7 @@ jobs:
   review-on-push:
     # Skip PRs from forks: GitHub omits secrets on `pull_request` events
     # raised from forks, so the OpenAI key would be empty and the run would
-    # fail. A maintainer can still review a fork PR by commenting `@codex`
+    # fail. A maintainer can still review a fork PR by commenting `/codex-review`
     # (see `review-on-comment` below), which runs in the base-repo context
     # with full secret access.
     if: >-
@@ -106,7 +105,7 @@ jobs:
       openai_api_key: ${{ secrets.OPENAI_API_KEY }}
 
   review-on-comment:
-    # Only run on `@codex` comments posted on PRs (not regular issues),
+    # Only run on `/codex-review` comments posted on PRs (not regular issues),
     # and only when the commenter is a repo OWNER, MEMBER, or COLLABORATOR.
     # This keeps the cost surface bounded — external CONTRIBUTORs cannot
     # burn credits, even on their own merged work.
@@ -119,7 +118,7 @@ jobs:
     if: >-
       github.event_name == 'issue_comment' &&
       github.event.issue.pull_request != null &&
-      contains(github.event.comment.body, '@codex') &&
+      contains(github.event.comment.body, '/codex-review') &&
       contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association)
     uses: Keiron-HealthTech/ReusableWorkflow/.github/workflows/codexPrReview.yml@main
     with:
@@ -200,16 +199,39 @@ the offending base branch and exits cleanly — Codex is never invoked.
 #### Author-association retrigger gate
 
 Only commenters whose `github.event.comment.author_association` is one of
-`OWNER`, `MEMBER`, or `COLLABORATOR` can retrigger the review via `@codex`.
+`OWNER`, `MEMBER`, or `COLLABORATOR` can retrigger the review via `/codex-review`.
 External `CONTRIBUTOR`s — even those with merged commits in the repo — are
 deliberately blocked. Without this gate, anyone who can comment on a public
-PR could spam `@codex` mentions and run up the OpenAI bill.
+PR could spam `/codex-review` comments and run up the OpenAI bill.
+
+The phrase is `/codex-review`, not `@codex`. `@codex` is the mention the
+ChatGPT Codex GitHub app listens for: it answers every `@codex` (our own
+footer included) with a "create a Codex account" comment. That extra
+comment cancels the in-flight review through the caller's concurrency group,
+and a caller gate matching `codex` in commenter logins then reads it as
+"already reviewed".
+
+#### Re-runs, prior context, and outdated reviews
+
+- Each review comment carries a `<!-- codex-review sha=<head> -->` marker.
+  Automatic runs skip a head SHA that already has a review, so CI re-runs
+  don't produce duplicate reviews. `/codex-review` always runs.
+- The prompt includes the PR title and description, the previous Codex
+  review, and the last 15 human comments. Codex uses them to avoid
+  re-raising findings a human already dismissed.
+- Before posting, older Codex reviews are collapsed as "outdated", so the PR
+  shows one current review.
+- Runs that produce no usable review (empty output, or Codex could not read
+  the repo) post nothing. See the workflow run log.
+- The Codex step passes `project_doc_fallback_filenames=["CLAUDE.md"]`, so
+  repos that keep their conventions in `CLAUDE.md` instead of `AGENTS.md`
+  still get them loaded.
 
 #### Customizing the prompt
 
-The default prompt covers a "good standards" review (correctness, security,
-error handling, tests, readability, performance, API compatibility,
-configuration). Callers can override it in two mutually exclusive ways:
+The default prompt asks for verified findings only (bugs, security, breaking
+changes, error handling), at most five, in a compact format. A clean PR gets
+a two-line approval. Callers can override it in two mutually exclusive ways:
 
 1. **Inline `review_prompt` input** — paste a multiline string directly in
    the caller workflow:
@@ -253,6 +275,6 @@ back to the default.
         - "!**/*.md"
   ```
 
-- **Adopt `@codex` only** (delete the `review-on-push` job) on repos where
+- **Adopt `/codex-review` only** (delete the `review-on-push` job) on repos where
   automatic review on every push would be excessive. Maintainers then
   request a review explicitly when they want one.
