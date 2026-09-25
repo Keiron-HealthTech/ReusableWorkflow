@@ -205,8 +205,8 @@ deliberately blocked. Without this gate, anyone who can comment on a public
 PR could spam `/codex-review` comments and run up the OpenAI bill.
 
 The phrase is `/codex-review`, not `@codex`. `@codex` is the mention the
-ChatGPT Codex GitHub app listens for: it answers every `@codex` (our own
-footer included) with a "create a Codex account" comment. That extra
+ChatGPT Codex GitHub app listens for: it answers every `@codex` with a
+"create a Codex account" comment. That extra
 comment cancels the in-flight review through the caller's concurrency group,
 and a caller gate matching `codex` in commenter logins then reads it as
 "already reviewed".
