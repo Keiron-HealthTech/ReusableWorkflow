@@ -228,6 +228,31 @@ and a caller gate matching `codex` in commenter logins then reads it as
   `CLAUDE.md` is loaded only in directories with no `AGENTS.md`. If both
   exist (or an `AGENTS.md` is added later), `CLAUDE.md` is silently ignored there.
 
+#### Inline comments
+
+Set `inline_comments: true` to get each finding as an inline review comment
+on its diff line, instead of only a single PR comment:
+
+```yaml
+with:
+  pr_number: ${{ github.event.pull_request.number }}
+  prompt_file: .github/codex/pr-review.prompt.md
+  inline_comments: true
+```
+
+- Codex answers in JSON with the schema at
+  `.github/codex/review-output.schema.json` (verdict, summary, findings with
+  `path`/`line`/`severity`, notes). The workflow appends the output format to
+  the end of the prompt, so the caller prompt keeps its criteria and
+  severities unchanged and its own output format section is overridden.
+- The PR comment keeps the verdict, the summary, findings whose line is not
+  in the diff, and the notes. It carries the usual `codex-review sha=` marker,
+  so re-runs, prior context and outdated collapsing work the same way.
+- Findings on a diff line are posted as one review with `event: COMMENT`. It
+  never approves or requests changes. Inline comments from older runs are
+  collapsed as outdated.
+- Default `false`: callers that don't set it keep the single-comment output.
+
 #### Customizing the prompt
 
 The default prompt asks for verified findings only (bugs, security, breaking

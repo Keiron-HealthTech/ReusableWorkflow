@@ -38,6 +38,15 @@ on:
         required: false
         type: boolean
         default: true
+      # Caller toggle: post each finding as an inline review comment on its diff
+      # line. Codex answers in JSON (.github/codex/review-output.schema.json in
+      # this repo); verdict, summary and findings outside the diff stay in the
+      # PR comment.
+      inline_comments:
+        description: "If true, post findings as inline review comments on the diff (default false)."
+        required: false
+        type: boolean
+        default: false
       # Security gate: when false (default), skip review entirely if the PR
       # head is from a fork. Prevents the workflow from checking out untrusted
       # fork code while OPENAI_API_KEY is in the job env. The pull_request
@@ -268,11 +277,12 @@ jobs:
       # repo clone. `cone-mode: false` is required because we want a single
       # file path, not a directory cone.
       #
-      # Skipped when the caller passes `review_prompt` (inline override) —
-      # that path doesn't need the default file. Also skipped on lockfiles-
-      # only diffs since there's no Codex run to feed.
+      # Skipped when the caller passes `review_prompt` (inline override) and
+      # does not use `inline_comments` — that path needs neither the default
+      # prompt nor the output schema. Also skipped on lockfiles-only diffs
+      # since there's no Codex run to feed.
       - name: Sparse checkout default prompt
-        if: ${{ steps.refs.outputs.should_skip != 'true' && steps.scope.outputs.lockfiles_only != 'true' && inputs.review_prompt == '' }}
+        if: ${{ steps.refs.outputs.should_skip != 'true' && steps.scope.outputs.lockfiles_only != 'true' && (inputs.review_prompt == '' || inputs.inline_comments) }}
         uses: actions/checkout@v4
         with:
           repository: Keiron-HealthTech/ReusableWorkflow
@@ -280,6 +290,7 @@ jobs:
           path: .codex-defaults
           sparse-checkout: |
             .github/codex/pr-review.prompt.md
+            .github/codex/review-output.schema.json
           sparse-checkout-cone-mode: false
 
       # 6. Resolve the effective review prompt by precedence:
@@ -353,6 +364,7 @@ jobs:
           HEAD_SHA: ${{ steps.refs.outputs.head_sha }}
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ inputs.pr_number }}
+          INLINE_COMMENTS: ${{ inputs.inline_comments }}
         run: |
           set -euo pipefail
           OUT="${RUNNER_TEMP:-/tmp}/codex-prompt.md"
@@ -406,6 +418,16 @@ jobs:
             else
               cat "$EFFECTIVE_PROMPT_FILE"
             fi
+            if [ "$INLINE_COMMENTS" = "true" ]; then
+              echo ""
+              echo "# Output format (overrides any output format above)"
+              echo ""
+              echo "Answer only with JSON matching the provided output schema. The review criteria, severities and rules above still apply; only the shape changes."
+              echo ""
+              echo "- \`verdict\` and \`summary\`: as defined above."
+              echo "- \`findings\`: one entry per distinct issue, empty array if none. \`path\` is repo-relative. \`line\` is the line number in the head version of the file, on a line this PR added or changed whenever possible, because each finding is posted as an inline comment on that line. \`title\` is short. \`body\` is one paragraph: what is wrong, why it matters, suggested fix. If the same issue repeats in several files, report it once at the first location and list the others in \`body\`."
+              echo "- \`notes\`: anything that does not belong to a single line (coverage, manual steps to declare in the PR description). Empty string if none."
+            fi
           } > "$OUT"
           echo "final_prompt_path=$OUT" >> "$GITHUB_OUTPUT"
 
@@ -422,6 +444,7 @@ jobs:
           openai-api-key: ${{ secrets.openai_api_key }}
           prompt-file: ${{ steps.compose.outputs.final_prompt_path }}
           model: ${{ inputs.model }}
+          output-schema-file: ${{ inputs.inline_comments && format('{0}/.codex-defaults/.github/codex/review-output.schema.json', github.workspace) || '' }}
           # CLAUDE.md is a fallback: Codex takes the first match per directory,
           # AGENTS.md first, so CLAUDE.md loads only where no AGENTS.md exists.
           # crm-backend keeps its conventions in CLAUDE.md.
@@ -467,7 +490,7 @@ jobs:
       # `continue-on-error: true`: a GitHub API 5xx on createComment MUST
       # NOT fail the caller's PR check.
       - name: Post PR comment
-        if: ${{ steps.refs.outputs.should_skip != 'true' && inputs.comment_on_pr && steps.scope.outputs.lockfiles_only != 'true' }}
+        if: ${{ steps.refs.outputs.should_skip != 'true' && inputs.comment_on_pr && steps.scope.outputs.lockfiles_only != 'true' && !inputs.inline_comments }}
         uses: actions/github-script@v7
         continue-on-error: true
         env:
@@ -519,6 +542,116 @@ jobs:
 
             // Collapse older reviews only after the new one is posted.
             for (const c of previous) {
+              try {
+                await github.graphql(
+                  'mutation($id: ID!) { minimizeComment(input: {subjectId: $id, classifier: OUTDATED}) { clientMutationId } }',
+                  { id: c.node_id },
+                );
+              } catch (e) {
+                core.warning(`could not collapse comment ${c.id}: ${e.message}`);
+              }
+            }
+
+      # 11. Inline mode: post the JSON review as a PR comment (verdict, summary,
+      # findings outside the diff, notes) plus one review with an inline comment
+      # per finding on a diff line.
+      #
+      # The summary comment carries the same `<!-- codex-review sha=HEAD -->`
+      # marker as step 10, so the same-SHA guard, prior-review context and
+      # outdated collapsing work unchanged. Inline comments from older runs
+      # carry `<!-- codex-inline -->` and are collapsed as outdated too.
+      #
+      # GitHub rejects the whole review if one comment targets a line outside
+      # the diff, so each finding is checked against the RIGHT-side lines of the
+      # file patches first; the rest go to the summary comment.
+      - name: Post inline review
+        if: ${{ steps.refs.outputs.should_skip != 'true' && inputs.comment_on_pr && steps.scope.outputs.lockfiles_only != 'true' && inputs.inline_comments }}
+        uses: actions/github-script@v7
+        continue-on-error: true
+        env:
+          CODEX_FINAL_MESSAGE: ${{ steps.codex.outputs.final-message }}
+          PR_NUMBER: ${{ inputs.pr_number }}
+          HEAD_SHA: ${{ steps.refs.outputs.head_sha }}
+        with:
+          script: |
+            const MAX_BODY = 60000;
+            const MARKER_PREFIX = '<!-- codex-review sha=';
+            const MARKER = `${MARKER_PREFIX}${process.env.HEAD_SHA} -->`;
+            const INLINE_MARKER = '<!-- codex-inline -->';
+            const prNumber = parseInt(process.env.PR_NUMBER, 10);
+            const { owner, repo } = context.repo;
+
+            let review;
+            try {
+              review = JSON.parse((process.env.CODEX_FINAL_MESSAGE || '').trim());
+            } catch (e) {
+              core.warning(`Codex output is not valid JSON; not posting. Output head: ${(process.env.CODEX_FINAL_MESSAGE || '').slice(0, 200)}`);
+              return;
+            }
+            const findings = Array.isArray(review.findings) ? review.findings : [];
+
+            // RIGHT-side line numbers present in each file's patch (added + context).
+            const files = await github.paginate(github.rest.pulls.listFiles, { owner, repo, pull_number: prNumber, per_page: 100 });
+            const diffLines = new Map();
+            for (const f of files) {
+              const lines = new Set();
+              let right = 0;
+              for (const l of (f.patch || '').split('\n')) {
+                const hunk = l.match(/^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
+                if (hunk) { right = parseInt(hunk[1], 10); continue; }
+                if (l === '' || l.startsWith('-') || l.startsWith('\\')) continue;
+                lines.add(right);
+                right++;
+              }
+              diffLines.set(f.filename, lines);
+            }
+
+            const label = (f) => `**[${f.severity}] ${f.title}**`;
+            const inline = findings.filter((f) => diffLines.get(f.path)?.has(f.line));
+            const outside = findings.filter((f) => !inline.includes(f));
+
+            const parts = [`**Verdict:** ${review.verdict}`, '', review.summary || ''];
+            if (inline.length) parts.push('', `${inline.length} finding(s) posted inline on the diff.`);
+            if (outside.length) {
+              parts.push('', '**Findings outside the diff**', '');
+              for (const f of outside) parts.push(`- \`${f.path}:${f.line}\` ${label(f)}`, `  ${f.body}`);
+            }
+            if (!findings.length) parts.push('', 'No findings.');
+            if ((review.notes || '').trim()) parts.push('', '**Notes**', '', review.notes.trim());
+            let summaryBody = parts.join('\n');
+            if (summaryBody.length > MAX_BODY) summaryBody = summaryBody.slice(0, MAX_BODY) + '\n\n_[truncated — see workflow run for full output]_';
+
+            const previous = (await github.paginate(github.rest.issues.listComments, { owner, repo, issue_number: prNumber, per_page: 100 }))
+              .filter((c) => c.user?.login === 'github-actions[bot]' && (c.body || '').includes(MARKER_PREFIX));
+            const previousInline = (await github.paginate(github.rest.pulls.listReviewComments, { owner, repo, pull_number: prNumber, per_page: 100 }))
+              .filter((c) => c.user?.login === 'github-actions[bot]' && (c.body || '').includes(INLINE_MARKER));
+
+            await github.rest.issues.createComment({ owner, repo, issue_number: prNumber, body: `${MARKER}\n${summaryBody}` });
+
+            if (inline.length) {
+              try {
+                await github.rest.pulls.createReview({
+                  owner,
+                  repo,
+                  pull_number: prNumber,
+                  commit_id: process.env.HEAD_SHA,
+                  event: 'COMMENT',
+                  comments: inline.map((f) => ({
+                    path: f.path,
+                    line: f.line,
+                    side: 'RIGHT',
+                    body: `${INLINE_MARKER}\n${label(f)}\n\n${f.body}`,
+                  })),
+                });
+              } catch (e) {
+                core.warning(`could not post inline review: ${e.message}`);
+                const lines = inline.flatMap((f) => [`- \`${f.path}:${f.line}\` ${label(f)}`, `  ${f.body}`]);
+                await github.rest.issues.createComment({ owner, repo, issue_number: prNumber, body: ['**Findings (inline review failed)**', '', ...lines].join('\n') });
+              }
+            }
+
+            // Collapse older reviews only after the new one is posted.
+            for (const c of [...previous, ...previousInline]) {
               try {
                 await github.graphql(
                   'mutation($id: ID!) { minimizeComment(input: {subjectId: $id, classifier: OUTDATED}) { clientMutationId } }',
