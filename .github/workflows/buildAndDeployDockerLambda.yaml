@@ -78,6 +78,15 @@ jobs:
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
 
+      # Pull autenticado de imágenes base de public.ecr.aws (el anónimo comparte cuota por IP y da 429).
+      # No bloquea: sin el permiso en el rol, el build sigue con pull anónimo como antes.
+      - name: Login to Amazon ECR Public
+        if: inputs.aws_region == 'us-east-1'
+        continue-on-error: true
+        uses: aws-actions/amazon-ecr-login@v2
+        with:
+          registry-type: public
+
       - name: Build, tag, and push image to Amazon ECR
         id: build-image
         env:
