@@ -85,7 +85,11 @@ jobs:
           ECR_REPOSITORY: ${{ inputs.ecr_repository }}
           IMAGE_TAG: ${{ github.sha }}
         run: |
+          # Lambda rejects image indexes. On the containerd image store (ubuntu-26.04+) docker build
+          # attaches attestations by default, which turns the push into an index; disable them.
           docker build \
+            --provenance=false \
+            --sbom=false \
             -f ${{ inputs.dockerfile }} \
             -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG \
             -t $ECR_REGISTRY/$ECR_REPOSITORY:latest \
