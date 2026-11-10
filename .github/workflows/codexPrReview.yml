@@ -81,7 +81,8 @@ permissions:
 
 jobs:
   review:
-    runs-on: ubuntu-latest
+    # Pinned: on ubuntu-26.04 the codex-action `drop-sudo` step fails and no review is posted.
+    runs-on: ubuntu-24.04
     steps:
       # 1. Resolve PR metadata via `gh pr view` and apply scope guards.
       #
