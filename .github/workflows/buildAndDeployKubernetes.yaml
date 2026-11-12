@@ -31,6 +31,10 @@ on:
         description: "Target cluster: 'production' or 'staging'. If not set, uses legacy credentials."
         type: string
         default: ""
+      cache_backend:
+        description: "Where BuildKit keeps its layer cache: 'gha' (GitHub Actions cache, 10 GB per repository) or 'registry' (a buildcache tag in the image's ECR repository)."
+        type: string
+        default: "gha"
 
 jobs:
   build-and-publish:
@@ -42,6 +46,7 @@ jobs:
       dockerfile: ${{inputs.dockerfile}}
       prefix: ${{inputs.prefix}}
       cluster: ${{inputs.cluster}}
+      cache_backend: ${{inputs.cache_backend}}
     secrets: inherit
 
   deploy:
