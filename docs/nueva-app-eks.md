@@ -1,7 +1,7 @@
 # Llevar una app nueva a Kubernetes (EKS) con ReusableWorkflow
 
 Guía para los equipos de producto que tienen una app (API, worker, servicio) en su propio
-repo y quieren desplegarla en los clusters de Keiron: **QA** y **producción**.
+repo y quieren desplegarla en los clusters de Keiron: **staging** (QA) y **producción**.
 
 Si trabajas con un agente de IA (Claude Code, Codex, etc.), instala la skill de la
 sección 8: aplica esta guía sobre tu repo y te deja lista la solicitud para tech-ops.
@@ -16,7 +16,7 @@ levanta y lo mantiene tech-ops.
 | Dockerfile que compila para `arm64` | Repositorio ECR por ambiente |
 | Endpoint de health y puerto configurable | Namespace, Deployment, Service, Ingress y autoescalado |
 | Workflows de deploy en `.github/workflows/` (sección 4) | Permiso OIDC del repo y de sus ramas |
-| Valores de los secretos en Doppler | Proyecto/config de Doppler y su sincronización al cluster |
+| Lista de variables de entorno y sus valores (sección 5) | Configs de Doppler, carga de valores y sincronización al cluster |
 | Solicitud con los datos de la sección 3 | Alta de la app y verificación del primer deploy |
 
 En el repo de la app **no** van manifiestos de Kubernetes, charts de Helm, Terraform/CDK ni
@@ -27,14 +27,20 @@ viven en los repos de infra.
 
 1. Preparas la app con el checklist de la sección 3.
 2. Pides el alta por **Solicitudes de Accesos**: `/asks` en Slack, formulario "Solicitud de
-   Acceso" (sección 3). Una solicitud para la app y, si hace falta, una por persona para Doppler
-   y New Relic.
+   Acceso" (sección 3).
 3. tech-ops crea el ECR, habilita tu repo por OIDC, crea las configs de Doppler y levanta el
    Deployment con una imagen de relleno. Te responde en la misma solicitud con `app_name`,
-   `namespace`, los nombres de ECR y la ruta pública.
-4. Agregas los dos workflows (sección 4) y cargas los secretos en Doppler (sección 5).
-5. Merge a `development` → se construye la imagen y se despliega en **QA**. Validas.
+   `namespace`, los nombres de ECR y la URL de la app.
+4. Agregas los workflows (sección 4) y coordinas con tech-ops los valores de las variables
+   (sección 5).
+5. Merge a `development` → se construye la imagen y se despliega en **staging**. Validas.
 6. Merge a `main` → se despliega en **producción**.
+
+**Producción es el ambiente estable.** Staging no tiene garantías de disponibilidad de parte de
+infra: puede caerse, reiniciarse o cambiar sin aviso. Además, una app en staging **nunca debe
+conectarse a nada de producción** (bases de datos, colas, buckets, APIs). Si tu app no tiene
+recursos de staging a los que conectarse, no va a staging: se despliega solo en producción, te
+saltas el paso 5 y creas solo el workflow de producción.
 
 Hasta el primer deploy desde tu CI, el pod corre una imagen de relleno que se cae sola
 (aparece como `CrashLoopBackOff`). Es esperado: el primer merge lo reemplaza.
@@ -49,17 +55,22 @@ Hasta el primer deploy desde tu CI, el pod corre una imagen de relleno que se ca
       logs. Pruébalo: `docker buildx build --platform linux/arm64 .`
 - [ ] **Dockerfile limpio:** multi-stage, `.dockerignore` (`node_modules`, `.git`, `.env*`),
       sin secretos ni `.env` dentro de la imagen, usuario no root.
-- [ ] **Una imagen para todos los ambientes.** Toda diferencia entre QA y prod llega por
+- [ ] **Una imagen para todos los ambientes.** Toda diferencia entre staging y prod llega por
       variables de entorno; nada de archivos de config por ambiente horneados en la imagen.
 - [ ] **Escucha en `0.0.0.0` y en el puerto de la variable `PORT`** (por defecto `5000`; el
-      valor se acuerda con tech-ops y tiene que coincidir con lo que cargues en Doppler).
-- [ ] **Sirve sus rutas bajo su prefijo.** El balanceador no reescribe el path: si la app se
-      publica en `https://api.keiron.cl/<prefijo>`, la app tiene que responder en
-      `/<prefijo>/...` (prefijo global del router de tu framework, por ejemplo
-      `app.setGlobalPrefix('<prefijo>')` en NestJS). El prefijo lo confirma tech-ops; suele ser
-      `/<namespace>/<app>` o `/<app>`.
-- [ ] **Healthcheck:** `GET /<prefijo>/healthz` responde `200` en menos de un segundo, sin
-      depender de servicios externos lentos. Kubernetes no manda tráfico al pod hasta que
+      valor se acuerda con tech-ops).
+- [ ] **Rutas según cómo se publique la app.** tech-ops evalúa la forma y te la confirma en la
+      respuesta a la solicitud:
+      - **Prefijo** en el dominio compartido, por ejemplo `https://api.keiron.cl/revenue/algo`.
+        El balanceador no reescribe el path, así que la app tiene que responder en
+        `/<prefijo>/...` (prefijo global del router de tu framework, por ejemplo
+        `app.setGlobalPrefix('<prefijo>')` en NestJS).
+      - **Subdominio propio**, si tech-ops evalúa que es lo mejor, por ejemplo
+        `https://revenue.api.keiron.cl/algo`. Ahí la app responde desde la raíz.
+
+      Si aún no lo sabes, deja el prefijo configurable por variable de entorno.
+- [ ] **Healthcheck:** `GET <ruta base>/healthz` (por ejemplo `/<prefijo>/healthz`) responde
+      `200` en menos de un segundo, sin depender de servicios externos lentos. Kubernetes no manda tráfico al pod hasta que
       responde, y lo saca si deja de responder.
 - [ ] **Apagado limpio:** maneja `SIGTERM`, termina los requests en curso y cierra conexiones en
       menos de 30 segundos. Arranca con forma exec (`CMD ["node", "dist/main.js"]`), no con
@@ -78,11 +89,8 @@ formulario "Solicitud de Acceso" (queda como issue en el equipo SOL de Linear, c
 de tu líder según el procedimiento de gestión de accesos). Sin solicitud aprobada no se levanta
 nada.
 
-Se piden dos cosas, en solicitudes separadas:
-
-1. **El alta de la app** (una solicitud por app): que tu repo pueda desplegar en EKS.
-2. **Los accesos de las personas** (una solicitud por persona y por sistema), solo si no los
-   tienen: Doppler para cargar los secretos de la app y New Relic para ver sus logs.
+Lo principal es **el alta de la app** (una solicitud por app): que tu repo pueda desplegar en
+EKS. Los accesos de personas son aparte y solo si de verdad se necesitan (solicitud 2).
 
 #### Solicitud 1: alta de la app
 
@@ -95,10 +103,10 @@ Campos del formulario:
 | Área / Rol | Equipo y rol del responsable (ej. `Desarrollo CRM`) |
 | Líder / Gerente que aprueba | Líder del equipo dueño de la app |
 | Tipo | `Alta` |
-| Fecha requerida | Cuándo necesitas QA listo (cuenta unos días hábiles) |
+| Fecha requerida | Cuándo necesitas el primer ambiente listo (cuenta unos días hábiles) |
 | Vigencia | `Permanente` |
 | Sistema | `AWS` |
-| Subsistema, módulo o recurso | `EKS: despliegue de <app> desde Keiron-HealthTech/<repo> (QA y prod)` |
+| Subsistema, módulo o recurso | `EKS: despliegue de <app> desde Keiron-HealthTech/<repo> (staging y prod, o solo prod)` |
 | Nivel de acceso | `Otro` |
 | Permisos específicos | `Deploy por GitHub Actions (OIDC) desde las ramas <development> y <main>; repositorios ECR de la app; configs de Doppler staging_<app> y production_<app>` |
 | Justificación | Para qué sirve la app y la ficha técnica de abajo, completa |
@@ -111,13 +119,13 @@ Qué hace la app: <una o dos frases>
 - Repo: Keiron-HealthTech/<repo>
 - Nombre de la app (kebab-case): <app>
 - Equipo / namespace sugerido: <crm | platform | ai | ...>
-- Ambientes: QA y prod | solo QA
-- Ramas: QA = development, prod = main (indicar si son otras)
+- Ambientes: staging y prod | solo prod
+- Recursos de staging a los que se conecta (sin nada de prod): <cuáles>
+- Ramas: staging = development, prod = main (indicar si son otras)
 - Dockerfile: <ruta>  (monorepo: una entrada por app)
 - Puerto (PORT): 5000
-- Healthcheck: GET /<prefijo>/healthz
-- Exposición: pública en api.keiron.cl | interna | sin HTTP (worker)
-- Ruta pública sugerida: /<prefijo>
+- Healthcheck: GET <ruta base>/healthz
+- Exposición: pública | interna | sin HTTP (worker). La URL final la define tech-ops.
 - Recursos estimados por réplica: CPU <x>, memoria <y>; réplicas mín/máx <a>/<b>
 - Variables de entorno (solo nombres): DATABASE_URL, ...
 - Recursos externos: bases de datos, colas, buckets, APIs, IPs fijas de salida
@@ -128,26 +136,30 @@ Qué hace la app: <una o dos frases>
 - Checklist de la sección 3: <cumple todo | pendientes: ...>
 ```
 
-#### Solicitud 2: accesos de personas (si aplica)
+#### Solicitud 2: accesos de personas (solo si se necesitan)
 
-Una por persona y por sistema, con el mismo formulario:
+Los accesos no vienen incluidos con el alta: se dan solo cuando hacen falta para el trabajo de
+la persona y quedan sujetos a evaluación de tech-ops. Si alguien del equipo necesita ver los logs
+y métricas de la app, pídelo con el mismo formulario, una solicitud por persona, explicando para
+qué lo necesita:
 
 | Sistema | Subsistema / recurso | Nivel | Permisos específicos |
 |---|---|---|---|
-| `Doppler` | `Proyecto <namespace>, configs staging_<app> y production_<app>` | `Editor` | `Cargar y editar los secretos de <app>` |
-| `New Relic` | `Logs y APM de <app>` | `ReadOnly` | `Ver logs y métricas de <app> en QA y prod` |
+| `New Relic` | `Logs y APM de <app>` | `ReadOnly` | `Ver logs y métricas de <app>` |
+
+Doppler no se pide: por ahora los valores los administra tech-ops (sección 5).
 
 ## 4. Workflows en tu repo
 
-Dos archivos, uno por ambiente. Ambos llaman a
+Un archivo por ambiente; si tu app va solo a producción, crea solo el de prod. Cada uno llama a
 [`buildAndDeployKubernetes.yaml`](../.github/workflows/buildAndDeployKubernetes.yaml), que
 construye la imagen con BuildKit, la publica en ECR con el tag `<rama>-<prefix>-<sha8>` y
 hace el rollout del Deployment esperando a que quede sano.
 
-`.github/workflows/deploy-qa.yml`:
+`.github/workflows/deploy-staging.yml`:
 
 ```yaml
-name: Deploy <app> (QA)
+name: Deploy <app> (staging)
 
 on:
   push:
@@ -156,7 +168,7 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: deploy-qa-<app>
+  group: deploy-staging-<app>
   cancel-in-progress: true
 
 permissions:
@@ -223,7 +235,7 @@ Inputs de `buildAndDeployKubernetes.yaml`:
 
 | Input | Obligatorio | Qué es |
 |---|---|---|
-| `cluster` | sí (apps nuevas) | `staging` (QA) o `production`. Activa el login por OIDC. |
+| `cluster` | sí (apps nuevas) | `staging` o `production`. Activa el login por OIDC. |
 | `namespace` | sí | Namespace de Kubernetes. Lo define tech-ops. |
 | `app_name` | sí | Nombre del Deployment **y** de su contenedor. Lo define tech-ops. |
 | `image_repository_name` | sí | Repositorio ECR del ambiente. Lo crea tech-ops. |
@@ -236,77 +248,45 @@ Inputs de `buildAndDeployKubernetes.yaml`:
 **Monorepo con varias apps:** un job por app (o una matriz) con su `app_name`, `dockerfile` y
 `prefix`, y filtros `paths:` en el `on.push` para no desplegar lo que no cambió.
 
-## 5. Secretos y variables de entorno: cómo funciona Doppler
+## 5. Variables de entorno y secretos
 
-Toda la configuración de la app (secretos y variables normales) vive en **Doppler**. Ni el repo,
-ni la imagen, ni los workflows llevan valores.
+Toda la configuración de la app (secretos y variables normales) vive en **Doppler**, que
+administra tech-ops. Ni el repo, ni la imagen, ni los workflows llevan valores.
 
-### Cómo está organizado
+- Cada variable cargada en Doppler para tu app llega al pod como **variable de entorno** con el
+  mismo nombre (`DATABASE_URL` en Doppler → `process.env.DATABASE_URL`).
+- Si un valor cambia en Doppler, **los pods se reinician solos con el valor nuevo**, de a poco y
+  sin cortar el servicio. No tienes que hacer nada.
+- Por ahora los equipos no tienen acceso a Doppler. En la solicitud mandas los **nombres** de las
+  variables; los valores los coordinas directo con tech-ops, que te indica cómo entregarlos de
+  forma segura. Nunca los pegues en la solicitud, Slack, issues ni prompts de IA.
 
-```
-Proyecto de Doppler del equipo (ej. crm)
-├── dev          ← desarrollo local (dev_personal, etc.)
-├── staging      ← config raíz de QA: valores compartidos por todas las apps del proyecto
-│   └── staging_<app>       ← lo que usa tu app en QA
-└── production   ← config raíz de prod: valores compartidos
-    └── production_<app>    ← lo que usa tu app en prod
-```
+Reglas para la app:
 
-- Cada app tiene **una config por ambiente**: `staging_<app>` (QA) y `production_<app>` (prod).
-  tech-ops las crea en el proyecto de tu equipo y da acceso a quienes lo pidieron
-  (solicitud 2 de la sección 3). Tu equipo carga los valores.
-- Las configs de la app **heredan** de la raíz (`staging` / `production`): lo que está en la raíz
-  le llega a todas las apps del proyecto, y lo que defines en `<ambiente>_<app>` lo sobreescribe.
-  No edites la raíz sin coordinar: afecta a todas las apps del equipo.
-
-### Cómo llega a tu app
-
-1. Un operador del cluster lee tu config `<ambiente>_<app>` y la copia a un Secret de Kubernetes.
-2. El pod recibe **cada llave de la config como variable de entorno**, con el mismo nombre
-   (`DATABASE_URL` en Doppler → `process.env.DATABASE_URL`). Incluye las heredadas de la raíz.
-3. El pod no arranca hasta que ese Secret existe: si la config no existe o no se puede leer, el pod
-   queda detenido en `Init:0/1`.
-
-Las variables se leen **al arrancar** el proceso. Un valor nuevo solo se ve cuando los pods se
-reinician.
-
-### Qué pasa cuando cambias un valor
-
-- Al guardar un cambio en `staging_<app>` o `production_<app>`, Doppler avisa al cluster del
-  ambiente: se actualiza el Secret y se **reinician los pods de la app** en segundos, de forma
-  gradual. Pasa igual en QA y en prod.
-- **En producción, cada guardado es un reinicio.** Agrupa los cambios en un solo guardado y no lo
-  hagas en horario punta sin coordinar.
-- Si guardas un valor y la app no lo toma después de unos minutos, avisa a tech-ops: la config
-  puede no estar conectada a la sincronización automática.
-
-### Reglas
-
-- La app lee su configuración solo de variables de entorno. Nada de `.env` en la imagen, nada de
-  `doppler run` en el Dockerfile ni en el comando de arranque, y nada de llamar a la API de
-  Doppler desde la app.
+- Lee su configuración solo de variables de entorno. Nada de archivos `.env` dentro de la imagen,
+  nada de `doppler run` en el Dockerfile ni en el comando de arranque, y nada de llamar a la API
+  de Doppler desde la app.
 - Nombres en mayúsculas con `_` (`REDIS_URL`, `API_TIMEOUT_MS`). Todos los valores llegan como
   texto: convierte números y booleanos en el código.
 - **Valores multilínea** (llaves PEM, certificados): llegan con `\n` literal en vez de saltos de
-  línea. Conviértelos al leerlos (por ejemplo `value.replace(/\\n/g, '\n')`) o guárdalos en
-  base64.
-- Carga todas las variables que la app necesita para arrancar **antes** del primer merge; si
-  falta una, el rollout no queda sano.
+  línea. Conviértelos al leerlos (por ejemplo `value.replace(/\\n/g, '\n')`) o pide que se
+  guarden en base64.
+- Todas las variables que la app necesita para arrancar tienen que estar cargadas **antes** del
+  primer merge; si falta una, el rollout no queda sano.
 - `PORT` debe coincidir con el puerto acordado con tech-ops.
-- `NEW_RELIC_APP_NAME` lo define tech-ops y gana sobre Doppler; no lo cargues.
-- Para desarrollo local usa el ambiente `dev` del proyecto (`doppler setup` y luego
-  `doppler run -- <comando>`), nunca las configs de `staging` ni de `production`.
-- Nunca copies valores de Doppler a archivos, commits, issues, Slack ni prompts de IA. Si un valor
-  se filtró, avisa a tech-ops para rotarlo.
+- `NEW_RELIC_APP_NAME` lo define tech-ops; no lo incluyas en tu lista.
+- Si un valor se filtró, avisa a tech-ops para rotarlo.
 
 ## 6. Primer deploy y verificación
 
-1. Merge a `development`. En la pestaña Actions, el job `deploy` debe terminar en verde.
+1. Merge a `development`. En la pestaña Actions, el job `deploy` debe terminar en verde. Si tu
+   app va solo a producción, salta al paso 4.
 2. Verde significa que la imagen quedó publicada y que el rollout pasó el healthcheck dentro
    del `timeout`.
-3. Abre `https://qa.api.keiron.cl/<prefijo>/healthz` (si la app es pública) y revisa los logs
-   en New Relic.
-4. Recién con QA validado, merge a `main` y repite contra `https://api.keiron.cl/<prefijo>/healthz`.
+3. Si la app es pública, abre la URL de staging que te confirmó tech-ops (por ejemplo
+   `https://qa.api.keiron.cl/<prefijo>/healthz`).
+4. Recién con staging validado, merge a `main` y repite contra la URL de producción (por
+   ejemplo `https://api.keiron.cl/<prefijo>/healthz`).
 
 Si el rollout no queda sano, el job falla. Mientras la versión nueva no pase el healthcheck,
 la anterior sigue atendiendo (el rollout es gradual), pero el rollback no es automático:
@@ -321,8 +301,8 @@ corrige y vuelve a desplegar, o avisa a tech-ops.
 | `deployments.apps "<app>" not found` | `app_name` o `namespace` no coinciden con lo que creó tech-ops. |
 | El job queda en cola para siempre | `runner` con una etiqueta que no existe. |
 | `CrashLoopBackOff` sin logs o `exec format error` | Imagen `amd64`. Ver checklist. |
-| Rollout que vence el `timeout` | El healthcheck no responde: puerto distinto de `PORT`, falta el prefijo en las rutas o la app no arranca (revisa logs). |
-| Pod detenido en `Init:0/1` o `CreateContainerConfigError` | La config de Doppler no existe, está vacía o el cluster no puede leerla. |
+| Rollout que vence el `timeout` | El healthcheck no responde: puerto distinto de `PORT`, rutas sin el prefijo acordado, falta una variable o la app no arranca. Avisa a tech-ops con el link del run. |
+| Pod detenido en `Init:0/1` o `CreateContainerConfigError` | Las variables de la app aún no están en Doppler o el cluster no puede leerlas. Avisa a tech-ops. |
 
 ## 7. Qué no hacer
 
