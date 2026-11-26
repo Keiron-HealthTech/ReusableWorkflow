@@ -6,6 +6,9 @@
 
 In this repository are the actions for the deployment
 
+**¿App nueva en Kubernetes (EKS)?** Sigue la guía [docs/nueva-app-eks.md](docs/nueva-app-eks.md):
+qué prepara tu equipo, qué levanta tech-ops, los workflows a copiar y una skill para agentes de IA.
+
 #### Utils:
 
 - [Github Action Docs](https://docs.github.com/es/actions)
