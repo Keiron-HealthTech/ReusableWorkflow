@@ -39,6 +39,11 @@ no se puede determinar, con la evidencia: archivo y línea). Como mínimo:
   los tiene, va solo a producción. Una app en staging nunca se conecta a recursos de prod: si
   ves URLs o credenciales de prod en la config de staging, márcalo como bloqueante.
 
+- Auth: si la app tiene login, rutas privadas o una API que deba saber quién la llama. Si es así,
+  esa parte se resuelve con la skill `keiron-auth` (o la guía `docs/auth-apps.md` del mismo
+  repo si no está instalada): no implementes login, usuarios ni roles por tu cuenta, y la
+  solicitud de auth va aparte.
+
 Si puedes, valida el build para arm64: `docker buildx build --platform linux/arm64 .`.
 
 ## Paso 2: proponer y aplicar arreglos en el código de la app
@@ -120,7 +125,8 @@ Cierra con:
 1. Tabla del checklist con el estado final.
 2. Archivos creados o modificados.
 3. Tabla de variables y los avisos del Paso 4.
-4. La solicitud lista para enviar por `/asks`, y los pendientes del equipo (por ejemplo,
+4. La solicitud lista para enviar por `/asks` (y, si la app necesita auth, el aviso de que falta
+   la solicitud de auth con la skill `keiron-auth`), y los pendientes del equipo (por ejemplo,
    coordinar los valores de las variables con tech-ops) y de tech-ops.
 5. Cómo validar el primer deploy (sección 6 de la guía).
 

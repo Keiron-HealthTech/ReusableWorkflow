@@ -82,6 +82,13 @@ Hasta el primer deploy desde tu CI, el pod corre una imagen de relleno que se ca
 - [ ] **Sin credenciales AWS en el código ni en variables.** Si la app necesita S3, SQS, Bedrock
       u otro servicio, pídelo en la solicitud: el pod recibe permisos por identidad, sin llaves.
 
+### Si tu app necesita login o permisos
+
+Si los usuarios tienen que iniciar sesión, o tu API tiene que saber quién la llama y qué puede
+hacer, usa la auth central de Keirón: no crees usuarios, contraseñas ni roles propios. Sigue
+[`auth-apps.md`](auth-apps.md) (o su skill `keiron-auth`) y pídelo en una solicitud aparte; los
+equipos no tienen acceso al repo de auth, todo se gestiona con tech-ops.
+
 ### Qué nos tienes que pasar
 
 Todo llega a tech-ops por **Solicitudes de Accesos**: escribe `/asks` en Slack y elige el
@@ -125,6 +132,7 @@ Qué hace la app: <una o dos frases>
 - Dockerfile: <ruta>  (monorepo: una entrada por app)
 - Puerto (PORT): 5000
 - Healthcheck: GET <ruta base>/healthz
+- Login o permisos: no | sí (solicitud de auth aparte)
 - Exposición: pública | interna | sin HTTP (worker). La URL final la define tech-ops.
 - Recursos estimados por réplica: CPU <x>, memoria <y>; réplicas mín/máx <a>/<b>
 - Variables de entorno (solo nombres): DATABASE_URL, ...
@@ -317,7 +325,9 @@ corrige y vuelve a desplegar, o avisa a tech-ops.
 ## 8. Skill para agentes de IA
 
 La skill [`skills/deploy-eks`](../skills/deploy-eks/SKILL.md) hace que tu agente revise el repo
-contra esta guía, arme los workflows y redacte la solicitud. Para instalarla en el repo de tu app:
+contra esta guía, arme los workflows y redacte la solicitud. Si la app necesita login o permisos,
+instala también [`skills/keiron-auth`](../skills/keiron-auth/SKILL.md) (sección 8 de
+[`auth-apps.md`](auth-apps.md)). Para instalarla en el repo de tu app:
 
 ```bash
 mkdir -p .claude/skills/deploy-eks .agents/skills/deploy-eks
