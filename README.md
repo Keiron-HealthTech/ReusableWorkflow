@@ -349,6 +349,7 @@ jobs:
 | `reviewers` | input, required | `octocat, hubot, monalisa` | Pool of GitHub logins, separated by commas or spaces. Each one needs access to the repo. |
 | `count` | input | `2` | How many reviewers the PR should end up with. Default `2`. |
 | `slack_user_map` | input | `{"octocat":"U012ABCDEF"}` | GitHub login → Slack member ID. Logins without an entry are shown by name, without a mention. |
+| `group_pattern` | input | `'atn-\d+'` | Regex (case-insensitive) searched in the head branch name, then in the PR title. PRs with the same match get the same draw in every repo. Default: an issue key such as `ABC-123`. Empty string = always random. |
 | `dry_run` | input | `true` | Logs the draw without requesting reviews or posting to Slack. |
 | `slack_webhook_url` | secret | `https://hooks.slack.com/services/…` | [Incoming Webhook](https://api.slack.com/messaging/webhooks) of the channel. Without it reviewers are still assigned and the Slack step is skipped with a warning. |
 
@@ -358,6 +359,11 @@ as in the example, lets a team change them without a PR per repo.
 #### Behavior
 
 - The PR author is never drawn.
+- **One issue, same reviewers in every repo.** The draw is tied to the issue
+  key found in the branch name (`abc-123-fix-login`) or, failing that, in the
+  PR title. The PRs of one issue, even in different repos, get the same
+  reviewers as long as they share author and pool; with different authors at
+  least one reviewer is shared. Without an issue key the draw is random.
 - It tops up to `count` instead of re-drawing: people already requested by
   hand, or who already reviewed, count. A PR that goes back to draft and is
   marked ready again keeps its reviewers and is announced again.
