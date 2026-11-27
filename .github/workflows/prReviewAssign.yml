@@ -1,0 +1,157 @@
+name: PR Review Assign
+
+# Reusable workflow that requests review from N random people of a pool on the
+# caller's pull request and announces it in a Slack channel.
+#
+# Caller wiring example: see README.md "PR Review Assign" section.
+
+on:
+  workflow_call:
+    inputs:
+      reviewers:
+        description: "Pool of GitHub logins to draw from, separated by commas or spaces."
+        required: true
+        type: string
+      count:
+        description: "How many reviewers the PR should end up with."
+        required: false
+        type: number
+        default: 2
+      slack_user_map:
+        description: 'JSON object mapping GitHub login to Slack member ID, e.g. {"octocat":"U012ABCDEF"}. Logins without an entry are shown by name, without a mention.'
+        required: false
+        type: string
+        default: "{}"
+      dry_run:
+        description: "If true, log the draw without requesting reviews or posting to Slack."
+        required: false
+        type: boolean
+        default: false
+    secrets:
+      slack_webhook_url:
+        description: "Slack Incoming Webhook of the channel to notify. Without it the Slack step is skipped."
+        required: false
+
+permissions:
+  pull-requests: write
+
+jobs:
+  assign:
+    # Drafts wait for `ready_for_review`. Fork and bot PRs get a read-only
+    # token and no secrets. `edited` only matters when the base branch changed
+    # (a PR retargeted to the watched branch).
+    if: >-
+      github.event.pull_request != null &&
+      github.event.pull_request.draft == false &&
+      github.event.pull_request.user.type != 'Bot' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      (github.event.action != 'edited' || github.event.changes.base != null)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Draw reviewers and notify
+        uses: actions/github-script@v8
+        env:
+          REVIEWERS: ${{ inputs.reviewers }}
+          COUNT: ${{ inputs.count }}
+          SLACK_USER_MAP: ${{ inputs.slack_user_map }}
+          DRY_RUN: ${{ inputs.dry_run }}
+          SLACK_WEBHOOK_URL: ${{ secrets.slack_webhook_url }}
+        with:
+          script: |
+            const { randomInt } = require('crypto');
+
+            const same = (a, b) => a.toLowerCase() === b.toLowerCase();
+            const dryRun = process.env.DRY_RUN === 'true';
+            const wanted = parseInt(process.env.COUNT, 10) || 2;
+            const pool = [...new Set(
+              (process.env.REVIEWERS || '').split(/[\s,]+/).map((l) => l.replace(/^@/, '')).filter(Boolean)
+            )];
+            if (pool.length === 0) {
+              core.setFailed('The `reviewers` input is empty: nobody to draw from.');
+              return;
+            }
+
+            const { owner, repo } = context.repo;
+            const pull_number = context.payload.pull_request.number;
+            // Re-read the PR: the event payload misses reviewers added since it fired.
+            const { data: pr } = await github.rest.pulls.get({ owner, repo, pull_number });
+            if (pr.state !== 'open' || pr.draft) {
+              core.info(`PR #${pull_number} is ${pr.draft ? 'a draft' : pr.state}; nothing to do.`);
+              return;
+            }
+            const author = pr.user.login;
+
+            const reviews = await github.paginate(github.rest.pulls.listReviews, { owner, repo, pull_number, per_page: 100 });
+            const current = [];
+            const addCurrent = (login) => {
+              if (!same(login, author) && !current.some((c) => same(c, login))) current.push(login);
+            };
+            pr.requested_reviewers.forEach((u) => addCurrent(u.login));
+            reviews.filter((r) => r.user && r.user.type !== 'Bot').forEach((r) => addCurrent(r.user.login));
+
+            // Top up to `count` instead of re-drawing, so re-runs (draft -> ready
+            // again, retargets) and reviewers picked by hand are respected.
+            const missing = Math.max(0, wanted - current.length);
+            const candidates = pool.filter((l) => !same(l, author) && !current.some((c) => same(c, l)));
+            for (let i = candidates.length - 1; i > 0; i--) {
+              const j = randomInt(i + 1);
+              [candidates[i], candidates[j]] = [candidates[j], candidates[i]];
+            }
+
+            const drawn = [];
+            for (const login of candidates) {
+              if (drawn.length >= missing) break;
+              if (dryRun) {
+                drawn.push(login);
+                continue;
+              }
+              try {
+                // One at a time: a single login without access would reject the whole batch.
+                await github.rest.pulls.requestReviewers({ owner, repo, pull_number, reviewers: [login] });
+                drawn.push(login);
+              } catch (error) {
+                core.warning(`Could not request review from ${login}: ${error.message}`);
+              }
+            }
+
+            const assigned = [...current, ...drawn];
+            core.info(`Already on the PR: ${current.join(', ') || 'nobody'}. Drawn: ${drawn.join(', ') || 'nobody'}.`);
+            if (assigned.length < wanted) {
+              core.warning(`PR #${pull_number} has ${assigned.length} of ${wanted} reviewers: the pool ran out of candidates.`);
+            }
+
+            if (dryRun) {
+              core.info('Dry run: no review requested, no Slack message sent.');
+              return;
+            }
+            const webhook = process.env.SLACK_WEBHOOK_URL;
+            if (!webhook) {
+              core.warning('No `slack_webhook_url` secret: skipping the Slack notification.');
+              return;
+            }
+
+            let slackIds = {};
+            try {
+              const parsed = JSON.parse(process.env.SLACK_USER_MAP || '{}');
+              for (const [login, id] of Object.entries(parsed)) slackIds[login.toLowerCase()] = id;
+            } catch (error) {
+              core.warning(`\`slack_user_map\` is not valid JSON, reviewers will not be mentioned: ${error.message}`);
+            }
+            const escape = (text) => text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+            const mention = (login) => (slackIds[login.toLowerCase()] ? `<@${slackIds[login.toLowerCase()]}>` : login);
+            const who = assigned.length ? assigned.map(mention).join(' ') : '_sin revisores asignados_';
+            const text =
+              `:eyes: *PR para revisar* en \`${repo}\` → \`${pr.base.ref}\`\n` +
+              `<${pr.html_url}|#${pull_number} ${escape(pr.title)}> de ${escape(author)}\n` +
+              `Revisan: ${who}`;
+
+            const response = await fetch(webhook, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ text, unfurl_links: false }),
+            });
+            if (!response.ok) {
+              // The reviewers are already requested; a Slack hiccup should not turn the check red.
+              core.warning(`Slack answered ${response.status}: ${await response.text()}`);
+            }

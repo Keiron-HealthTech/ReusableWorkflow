@@ -307,3 +307,62 @@ back to the default.
 - **Adopt `/codex-review` only** (delete the `review-on-push` job) on repos where
   automatic review on every push would be excessive. Maintainers then
   request a review explicitly when they want one.
+
+## PR Review Assign
+
+Reusable workflow that requests review from N random people of a pool when a
+pull request is opened (or leaves draft) and announces it in a Slack channel,
+mentioning the reviewers.
+
+#### Caller workflow
+
+Drop the following file into the caller repo at
+`.github/workflows/pr-review-assign.yml`:
+
+```yaml
+name: PR Review Assign
+
+on:
+  pull_request:
+    types: [opened, ready_for_review, edited]
+    branches: [staging]
+
+jobs:
+  assign:
+    uses: Keiron-HealthTech/ReusableWorkflow/.github/workflows/prReviewAssign.yml@main
+    with:
+      reviewers: ${{ vars.PR_REVIEWERS }}
+      slack_user_map: ${{ vars.PR_REVIEW_SLACK_USERS }}
+    secrets:
+      slack_webhook_url: ${{ secrets.SLACK_PR_REVIEW_WEBHOOK }}
+    permissions:
+      pull-requests: write
+```
+
+`edited` is there for PRs retargeted to the watched branch; any other edit
+(title, description) is skipped without starting a runner.
+
+#### Configuration
+
+| Name | Kind | Example | Notes |
+| --- | --- | --- | --- |
+| `reviewers` | input, required | `octocat, hubot, monalisa` | Pool of GitHub logins, separated by commas or spaces. Each one needs access to the repo. |
+| `count` | input | `2` | How many reviewers the PR should end up with. Default `2`. |
+| `slack_user_map` | input | `{"octocat":"U012ABCDEF"}` | GitHub login → Slack member ID. Logins without an entry are shown by name, without a mention. |
+| `dry_run` | input | `true` | Logs the draw without requesting reviews or posting to Slack. |
+| `slack_webhook_url` | secret | `https://hooks.slack.com/services/…` | [Incoming Webhook](https://api.slack.com/messaging/webhooks) of the channel. Without it reviewers are still assigned and the Slack step is skipped with a warning. |
+
+Keeping the pool and the Slack map in repository (or organization) variables,
+as in the example, lets a team change them without a PR per repo.
+
+#### Behavior
+
+- The PR author is never drawn.
+- It tops up to `count` instead of re-drawing: people already requested by
+  hand, or who already reviewed, count. A PR that goes back to draft and is
+  marked ready again keeps its reviewers and is announced again.
+- Drafts are skipped until they are marked ready for review.
+- PRs from forks and from bots are skipped: their token is read-only and
+  secrets are not available.
+- A login that cannot be requested (no access to the repo) is skipped with a
+  warning and the next candidate is tried.
