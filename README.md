@@ -9,6 +9,9 @@ In this repository are the actions for the deployment
 **¿App nueva en Kubernetes (EKS)?** Sigue la guía [docs/nueva-app-eks.md](docs/nueva-app-eks.md):
 qué prepara tu equipo, qué levanta tech-ops, los workflows a copiar y una skill para agentes de IA.
 
+**¿Tu app necesita login o permisos?** Sigue [docs/auth-apps.md](docs/auth-apps.md): cómo integrarla
+con la auth central de Keirón y qué pedirle a tech-ops.
+
 #### Utils:
 
 - [Github Action Docs](https://docs.github.com/es/actions)
