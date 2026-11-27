@@ -22,6 +22,11 @@ on:
         required: false
         type: string
         default: "{}"
+      group_pattern:
+        description: "Regex (case-insensitive) searched in the head branch name, then in the PR title. PRs with the same match get the same draw in every repo, so one issue split across repos keeps its reviewers. Defaults to an issue key such as ABC-123. Empty string = always random."
+        required: false
+        type: string
+        default: '(?<![a-z0-9])[a-z][a-z0-9]*-\d+(?![a-z0-9])'
       dry_run:
         description: "If true, log the draw without requesting reviews or posting to Slack."
         required: false
@@ -55,11 +60,12 @@ jobs:
           REVIEWERS: ${{ inputs.reviewers }}
           COUNT: ${{ inputs.count }}
           SLACK_USER_MAP: ${{ inputs.slack_user_map }}
+          GROUP_PATTERN: ${{ inputs.group_pattern }}
           DRY_RUN: ${{ inputs.dry_run }}
           SLACK_WEBHOOK_URL: ${{ secrets.slack_webhook_url }}
         with:
           script: |
-            const { randomInt } = require('crypto');
+            const { randomInt, createHash } = require('crypto');
 
             const same = (a, b) => a.toLowerCase() === b.toLowerCase();
             const dryRun = process.env.DRY_RUN === 'true';
@@ -94,9 +100,28 @@ jobs:
             // again, retargets) and reviewers picked by hand are respected.
             const missing = Math.max(0, wanted - current.length);
             const candidates = pool.filter((l) => !same(l, author) && !current.some((c) => same(c, l)));
-            for (let i = candidates.length - 1; i > 0; i--) {
-              const j = randomInt(i + 1);
-              [candidates[i], candidates[j]] = [candidates[j], candidates[i]];
+
+            let group = '';
+            if (process.env.GROUP_PATTERN) {
+              try {
+                const pattern = new RegExp(process.env.GROUP_PATTERN, 'i');
+                const match = pr.head.ref.match(pattern) || pr.title.match(pattern);
+                if (match) group = match[0].toLowerCase();
+              } catch (error) {
+                core.warning(`\`group_pattern\` is not a valid regex, drawing at random: ${error.message}`);
+              }
+            }
+            if (group) {
+              // Order by a hash of group + login: the same group gives the same
+              // order in any repo, without shared state between runs.
+              const rank = (login) => createHash('sha256').update(`${group}:${login.toLowerCase()}`).digest('hex');
+              candidates.sort((a, b) => (rank(a) < rank(b) ? -1 : 1));
+              core.info(`Draw tied to "${group}": the same in every repo for this group.`);
+            } else {
+              for (let i = candidates.length - 1; i > 0; i--) {
+                const j = randomInt(i + 1);
+                [candidates[i], candidates[j]] = [candidates[j], candidates[i]];
+              }
             }
 
             const drawn = [];
